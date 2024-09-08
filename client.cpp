@@ -12,7 +12,8 @@
 
 using json = nlohmann::json;
 
-class Client {
+class Client
+{
 private:
     int sock = 0;
     struct sockaddr_in serv_addr;
@@ -20,13 +21,16 @@ private:
     json config;
 
 public:
-    Client(const std::string& config_file) {
+    Client(const std::string &config_file)
+    {
         std::ifstream f(config_file);
         config = json::parse(f);
     }
 
-    bool connect_to_server() {
-        if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+    bool connect_to_server()
+    {
+        if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+        {
             std::cout << "Socket creation error" << std::endl;
             return false;
         }
@@ -34,12 +38,14 @@ public:
         serv_addr.sin_family = AF_INET;
         serv_addr.sin_port = htons(config["server_port"]);
 
-        if (inet_pton(AF_INET, config["server_ip"].get<std::string>().c_str(), &serv_addr.sin_addr) <= 0) {
+        if (inet_pton(AF_INET, config["server_ip"].get<std::string>().c_str(), &serv_addr.sin_addr) <= 0)
+        {
             std::cout << "Invalid address/ Address not supported" << std::endl;
             return false;
         }
 
-        if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0) {
+        if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+        {
             std::cout << "Connection Failed" << std::endl;
             return false;
         }
@@ -47,25 +53,30 @@ public:
         return true;
     }
 
-    void process_words() {
+    void process_words()
+    {
         int offset = 0;
         std::string message;
         char buffer[1024] = {0};
 
-        while (true) {
+        while (true)
+        {
             message = std::to_string(offset) + "\n";
             send(sock, message.c_str(), message.length(), 0);
             memset(buffer, 0, sizeof(buffer));
             int valread = read(sock, buffer, 1024);
-            
-            if (strcmp(buffer, "$$\n") == 0) {
+
+            if (strcmp(buffer, "$$\n") == 0)
+            {
                 break;
             }
 
             std::istringstream iss(buffer);
             std::string word;
-            while (std::getline(iss, word)) {
-                if (word == "EOF") {
+            while (std::getline(iss, word))
+            {
+                if (word == "EOF")
+                {
                     return;
                 }
                 word_frequency[word]++;
@@ -74,16 +85,20 @@ public:
         }
     }
 
-    void print_frequency() {
-        for (const auto& pair : word_frequency) {
+    void print_frequency()
+    {
+        for (const auto &pair : word_frequency)
+        {
             std::cout << pair.first << ", " << pair.second << std::endl;
         }
     }
 
-    void run() {
+    void run()
+    {
         auto start = std::chrono::high_resolution_clock::now();
 
-        if (!connect_to_server()) {
+        if (!connect_to_server())
+        {
             return;
         }
 
@@ -98,7 +113,8 @@ public:
     }
 };
 
-int main() {
+int main()
+{
     Client client("config.json");
     client.run();
     return 0;

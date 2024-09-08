@@ -1,6 +1,6 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -Wall -Wextra -pedantic
-LDFLAGS = -lnlohmann_json
+LDFLAGS = 
 
 all: build
 
