@@ -8,43 +8,50 @@
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <chrono>
+#include "json.hpp"
 #include <thread>
 #include <vector>
 #include <mutex>
-#include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
 
-class WordCountingClient
+class Client
 {
 private:
-    std::string serverIP;
-    int serverPort;
-    int k;
-    int p;
-    std::string filename;
-    std::map<std::string, int> wordFrequency;
-    std::mutex wordFrequencyMutex;
+    struct sockaddr_in serv_addr;
+    std::vector<std::map<std::string, int>> word_frequencies;
+    json config;
+    std::mutex word_frequencies_mutex;
+    std::vector<double> client_times;
 
-    bool connectToServer(int &sock)
+public:
+    Client(const std::string &config_file)
     {
-        sock = socket(AF_INET, SOCK_STREAM, 0);
-        if (sock == -1)
+        std::ifstream f(config_file);
+        config = json::parse(f);
+        int num_clients = config["num_clients"].get<int>();
+        word_frequencies.resize(num_clients);
+        client_times.resize(num_clients);
+    }
+
+    bool connect_to_server(int &sock)
+    {
+        if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
         {
-            std::cerr << "Failed to create socket" << std::endl;
+            std::cerr << "Socket creation error" << std::endl;
             return false;
         }
 
-        sockaddr_in serverAddr;
-        serverAddr.sin_family = AF_INET;
-        serverAddr.sin_port = htons(serverPort);
-        if (inet_pton(AF_INET, serverIP.c_str(), &serverAddr.sin_addr) <= 0)
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_port = htons(config["server_port"]);
+
+        if (inet_pton(AF_INET, config["server_ip"].get<std::string>().c_str(), &serv_addr.sin_addr) <= 0)
         {
             std::cerr << "Invalid address/ Address not supported" << std::endl;
             return false;
         }
 
-        if (connect(sock, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0)
+        if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
         {
             std::cerr << "Connection Failed" << std::endl;
             return false;
@@ -53,111 +60,130 @@ private:
         return true;
     }
 
-    void countWords(const std::string &words)
+    void process_words(int sock, int client_id)
     {
-        std::istringstream iss(words);
-        std::string word;
-        std::unique_lock<std::mutex> lock(wordFrequencyMutex);
-        while (iss >> word)
+        int offset = 0;
+        std::string message;
+        char buffer[1024] = {0};
+        int req_words = config["k"].get<int>();
+        int words_received = 0;
+
+        while (true)
         {
-            if (word == "EOF")
+            if (offset == 0)
+            {
+                message = std::to_string(offset) + "\n";
+                send(sock, message.c_str(), message.length(), 0);
+            }
+            if (words_received >= req_words)
+            {
+                message = std::to_string(offset) + "\n";
+                send(sock, message.c_str(), message.length(), 0);
+                words_received = 0;
+            }
+            memset(buffer, 0, sizeof(buffer));
+            int valread = read(sock, buffer, 1024);
+
+            if (strcmp(buffer, "$$\n") == 0 or valread <= 0)
             {
                 break;
             }
-            wordFrequency[word]++;
+
+            std::istringstream iss(buffer);
+            std::string line;
+            while (std::getline(iss, line))
+            {
+                std::istringstream line_stream(line);
+                std::string word;
+                while (std::getline(line_stream, word, ','))
+                {
+                    if (word == "EOF")
+                    {
+                        return;
+                    }
+                    words_received++;
+                    std::lock_guard<std::mutex> lock(word_frequencies_mutex);
+                    word_frequencies[client_id][word]++;
+                    offset++;
+                }
+            }
         }
     }
 
-    void runClient()
+    void write_frequency(int client_id)
     {
-        int sock;
-        if (!connectToServer(sock))
+        std::string filename = "output_client_" + std::to_string(client_id) + ".txt";
+        std::ofstream out(filename);
+
+        for (const auto &pair : word_frequencies[client_id])
+        {
+            out << pair.first << ", " << pair.second << "\n";
+        }
+
+        out.close();
+
+        std::cout << "Client " << client_id << " output written to " << filename << std::endl;
+    }
+
+    void run_client(int client_id)
+    {
+        auto start = std::chrono::high_resolution_clock::now();
+
+        int sock = 0;
+        if (!connect_to_server(sock))
         {
             return;
         }
 
-        int offset = 0;
-        while (true)
-        {
-            std::string request = std::to_string(offset) + "\n";
-            send(sock, request.c_str(), request.length(), 0);
-
-            char buffer[1024] = {0};
-            int bytesRead = recv(sock, buffer, 1024, 0);
-            if (bytesRead <= 0)
-            {
-                break;
-            }
-
-            std::string response(buffer);
-            if (response == "$$\n")
-            {
-                break;
-            }
-
-            countWords(response);
-            offset += k;
-        }
-
+        process_words(sock, client_id);
         close(sock);
+
+        write_frequency(client_id);
+
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> diff = end - start;
+        client_times[client_id] = diff.count();
+
+        std::cout << "Client " << client_id << " completed in " << diff.count() << " seconds" << std::endl;
     }
 
-public:
-    WordCountingClient(const std::string &configFile)
-    {
-        std::ifstream file(configFile);
-        json config;
-        file >> config;
-
-        serverIP = config["server_ip"];
-        serverPort = config["server_port"];
-        k = config["k"];
-        p = config["p"];
-        filename = config["filename"];
-    }
-
-    void run(int numClients)
+    void run()
     {
         auto start = std::chrono::high_resolution_clock::now();
 
-        std::vector<std::thread> clientThreads;
-        for (int i = 0; i < numClients; ++i)
+        int num_clients = config["num_clients"].get<int>();
+        std::vector<std::thread> client_threads;
+
+        for (int i = 0; i < num_clients; ++i)
         {
-            clientThreads.emplace_back(&WordCountingClient::runClient, this);
+            client_threads.emplace_back(&Client::run_client, this, i);
         }
 
-        for (auto &thread : clientThreads)
+        for (auto &thread : client_threads)
         {
             thread.join();
         }
 
         auto end = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> elapsed = end - start;
+        std::chrono::duration<double> total_time = end - start;
 
-        std::cout << "Average completion time per client: " << elapsed.count() / numClients << " seconds" << std::endl;
-    }
+        std::cout << "All clients completed." << std::endl;
+        std::cout << "Total time taken: " << total_time.count() << " seconds" << std::endl;
 
-    void printWordFrequency()
-    {
-        for (const auto &pair : wordFrequency)
+        double avg_time = 0;
+        for (int i = 0; i < num_clients; ++i)
         {
-            std::cout << pair.first << ", " << pair.second << std::endl;
+            avg_time += client_times[i];
         }
+        avg_time /= num_clients;
+
+        std::cout << "Average time per client: " << avg_time << " seconds" << std::endl;
     }
 };
 
-int main(int argc, char *argv[])
+int main()
 {
-    if (argc != 3)
-    {
-        std::cerr << "Usage: " << argv[0] << " <config_file> <num_clients>" << std::endl;
-        return 1;
-    }
-
-    int numClients = std::stoi(argv[2]);
-    WordCountingClient client(argv[1]);
-    client.run(numClients);
-    client.printWordFrequency();
-
+    Client client("config.json");
+    client.run();
     return 0;
 }

@@ -3,6 +3,6 @@
     "server_port": 8080,
     "k": 10,
     "p": 2,
-    "filename": "word.txt",
+    "filename": "words.txt",
     "n": 1
 }

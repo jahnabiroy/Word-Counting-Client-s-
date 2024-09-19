@@ -7,24 +7,30 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
+#include <chrono>
+#include <thread>
+#include <mutex>
+#include <atomic>
 #include "json.hpp"
-#include <cstring>
-#include <cerrno>
 
 using json = nlohmann::json;
 
-class Server
+class GrumpyServer
 {
 private:
-    int server_fd, new_socket;
+    int server_fd;
     struct sockaddr_in address;
     int opt = 1;
     int addrlen = sizeof(address);
     std::vector<std::string> words;
     json config;
+    std::mutex words_mutex;
+    std::atomic<bool> is_busy{false};
+    std::chrono::time_point<std::chrono::steady_clock> current_request_start;
+    std::chrono::time_point<std::chrono::steady_clock> last_collision_time;
 
 public:
-    Server(const std::string &config_file)
+    GrumpyServer(const std::string &config_file)
     {
         std::ifstream f(config_file);
         config = json::parse(f);
@@ -45,10 +51,7 @@ public:
         while (std::getline(file, word, ','))
         {
             words.push_back(word);
-            // printf("%s\n", word.c_str());
         }
-
-        // printf("Words loaded: %zu\n", words.size());
     }
 
     bool setup_server()
@@ -59,7 +62,6 @@ public:
             return false;
         }
         if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
-        // if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)))
         {
             std::cerr << "Setsockopt failed" << std::endl;
             return false;
@@ -84,36 +86,75 @@ public:
         return true;
     }
 
-    void handle_client()
+    bool check_collision(const std::chrono::time_point<std::chrono::steady_clock> &request_time)
+    {
+        if (is_busy)
+        {
+            return true;
+        }
+        if (request_time <= last_collision_time)
+        {
+            return true;
+        }
+        return false;
+    }
+
+    void handle_client(int client_socket)
     {
         char buffer[1024] = {0};
         while (true)
         {
-            int valread = read(new_socket, buffer, 1024);
+            int valread = read(client_socket, buffer, 1024);
             if (valread <= 0)
             {
                 break;
             }
 
-            int offset = std::stoi(buffer);
-            // printf("Received Offset: %d\n", offset);
+            std::string request(buffer);
+            if (request == "BUSY?\n")
+            {
+                if (is_busy)
+                {
+                    send(client_socket, "BUSY\n", 5, 0);
+                }
+                else
+                {
+                    send(client_socket, "IDLE\n", 5, 0);
+                }
+                continue;
+            }
 
+            auto request_time = std::chrono::steady_clock::now();
+            bool collision = check_collision(request_time);
+
+            if (collision)
+            {
+                send(client_socket, "HUH!\n", 5, 0);
+                last_collision_time = request_time;
+                continue;
+            }
+
+            is_busy = true;
+            current_request_start = request_time;
+
+            int offset = std::stoi(buffer);
+
+            std::unique_lock<std::mutex> lock(words_mutex);
             if (offset >= (int)words.size())
             {
-                send(new_socket, "$$\n", 3, 0);
+                send(client_socket, "$$\n", 3, 0);
+                is_busy = false;
                 break;
             }
 
             std::string response;
             int k = config["k"].get<int>();
             int p = config["p"].get<int>();
-            // printf("k: %d, p: %d\n", k, p);
             int words_sent = 0;
             bool eofAdded = false;
 
             for (int i = 0; i < k && offset + i < (int)words.size(); i++)
             {
-                // printf("offset + i :%d\n", i + offset);
                 response += words[offset + i] + ",";
                 words_sent++;
 
@@ -126,20 +167,22 @@ public:
                     }
                     response.pop_back(); // Remove the last comma
                     response += "\n";
-                    send(new_socket, response.c_str(), response.length(), 0);
+                    send(client_socket, response.c_str(), response.length(), 0);
                     response.clear();
                     words_sent = 0;
                 }
             }
+            lock.unlock();
 
             if (!eofAdded && offset + k >= (int)words.size())
             {
                 response = "EOF\n";
-                send(new_socket, response.c_str(), response.length(), 0);
+                send(client_socket, response.c_str(), response.length(), 0);
             }
 
-            // printf("Sent: %d\n", words_sent);
+            is_busy = false;
         }
+        close(client_socket);
     }
 
     void run()
@@ -149,17 +192,18 @@ public:
             return;
         }
 
-        std::cout << "Server is running..." << std::endl;
+        std::cout << "Grumpy Server is running..." << std::endl;
 
         while (true)
         {
+            int new_socket;
             if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0)
             {
                 std::cerr << "Accept failed" << std::endl;
                 continue;
             }
-            handle_client();
-            close(new_socket);
+            std::thread client_thread(&GrumpyServer::handle_client, this, new_socket);
+            client_thread.detach();
         }
 
         close(server_fd);
@@ -168,7 +212,7 @@ public:
 
 int main()
 {
-    Server server("config.json");
+    GrumpyServer server("config.json");
     server.run();
     return 0;
 }

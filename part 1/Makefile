@@ -1,6 +1,6 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -Wall -Wextra -pedantic
-LDFLAGS = -pthread
+LDFLAGS = 
 
 all: build
 

@@ -1,40 +1,63 @@
 import matplotlib.pyplot as plt
 import json
-import subprocess
 import numpy as np
+import sys
+import os
 
-def run_experiment(client_counts, runs=10):
-    results = []
-    for n in client_counts:
-        times = []
-        for _ in range(runs):
-            # Update config.json with current n value
-            with open('config.json', 'r+') as f:
-                config = json.load(f)
-                config['n'] = n
-                f.seek(0)
-                json.dump(config, f, indent=4)
-                f.truncate()
 
-            # Run the client and capture output
-            output = subprocess.check_output(['./client', 'config.json', str(n)], universal_newlines=True)
-            avg_time = float(output.split()[-2])  # Extract the average time from the output
-            times.append(avg_time)
+def read_config():
+    with open("config.json", "r") as f:
+        return json.load(f)
 
-        avg_time = np.mean(times)
-        std_dev = np.std(times)
-        results.append((avg_time, std_dev))
 
-    return results
+def read_client_times(num_clients):
+    times = []
+    for i in range(num_clients):
+        filename = f"output_client_{i}.txt"
+        if not os.path.exists(filename):
+            print(f"Error: {filename} not found. Make sure to run the client first.")
+            sys.exit(1)
 
-client_counts = range(1, 33, 4)
-results = run_experiment(client_counts)
+        with open(filename, "r") as f:
+            # Assuming the last line of each file contains the client's completion time
+            for line in f:
+                pass
+            last_line = line
 
-avg_times, std_devs = zip(*results)
+        # Extract the time from the last line
+        time = float(last_line.split()[-2])
+        times.append(time)
 
-plt.errorbar(client_counts, avg_times, yerr=std_devs, capsize=5)
-plt.xlabel('Number of Concurrent Clients')
-plt.ylabel('Average Completion Time per Client (s)')
-plt.title('Completion Time vs Number of Concurrent Clients')
-plt.savefig('plot.png')
-plt.close()
+    return times
+
+
+def plot_results(client_numbers, avg_times, std_dev):
+    plt.figure(figsize=(10, 6))
+    plt.errorbar(client_numbers, avg_times, yerr=std_dev, fmt="o-", capsize=5)
+    plt.xlabel("Number of Clients")
+    plt.ylabel("Average Completion Time per Client (seconds)")
+    plt.title("Average Completion Time vs Number of Clients")
+    plt.grid(True)
+    plt.savefig("plot.png")
+    plt.close()
+
+
+def main():
+    config = read_config()
+    max_clients = config.get("max_clients", 32)
+    client_numbers = list(range(1, max_clients + 1, 4))
+
+    avg_times = []
+    std_dev = []
+
+    for num_clients in client_numbers:
+        times = read_client_times(num_clients)
+        avg_times.append(np.mean(times))
+        std_dev.append(np.std(times))
+
+    plot_results(client_numbers, avg_times, std_dev)
+    print(f"Plot saved as plot.png")
+
+
+if __name__ == "__main__":
+    main()

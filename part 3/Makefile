@@ -15,6 +15,15 @@ server: server.cpp
 run: client server
 	./server & sleep 1 && ./client
 
+run-aloha: client server
+	./server & sleep 1 && ./client aloha
+
+run-beb: client server
+	./server & sleep 1 && ./client beb
+
+run-cscd: client server	
+	./server & sleep 1 && ./client sensing
+
 plot:
 	python3 plot.py
 

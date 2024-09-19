@@ -77,7 +77,7 @@ public:
             memset(buffer, 0, sizeof(buffer));
             int valread = read(sock, buffer, 1024);
 
-            std::cout << "Received data: " << buffer << std::endl;
+            // std::cout << "Received data: " << buffer << std::endl;
 
             if (strcmp(buffer, "$$\n") == 0 or valread <= 0)
             {
@@ -90,7 +90,7 @@ public:
             {
                 std::istringstream line_stream(line);
                 std::string word;
-                printf("Received Line: %s\n", line.c_str());
+                // printf("Received Line: %s\n", line.c_str());
                 while (std::getline(line_stream, word, ','))
                 {
                     if (word == "EOF")
@@ -109,8 +109,9 @@ public:
     {
         for (const auto &pair : word_frequency)
         {
+            std::ofstream out("output.txt", std::ios::app);
+            out << pair.first << ", " << pair.second << "\n";
             std::cout << pair.first << ", " << pair.second << std::endl;
-            std::cout.flush();
         }
     }
 
