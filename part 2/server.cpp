@@ -10,7 +10,8 @@
 #include "json.hpp"
 #include <cstring>
 #include <cerrno>
-#include <thread>
+// #include <thread>
+#include <pthread.h>
 #include <mutex>
 
 using json = nlohmann::json;
@@ -24,7 +25,8 @@ private:
     int addrlen = sizeof(address);
     std::vector<std::string> words;
     json config;
-    std::mutex words_mutex;
+    // std::mutex words_mutex;
+    pthread_mutex_t words_mutex;
 
 public:
     Server(const std::string &config_file)
@@ -32,6 +34,19 @@ public:
         std::ifstream f(config_file);
         config = json::parse(f);
         load_words();
+        pthread_mutex_init(&words_mutex, NULL);
+    }
+
+    ~Server()
+    {
+        pthread_mutex_destroy(&words_mutex);
+    }
+
+    // Singleton pattern to access the Server instance from static methods
+    static Server *get_instance()
+    {
+        static Server instance("config.json");
+        return &instance;
     }
 
     void load_words()
@@ -83,6 +98,17 @@ public:
         return true;
     }
 
+    static void *handle_client_thread(void *arg)
+    {
+        int client_socket = *((int *)arg);
+        delete (int *)arg;
+
+        Server *server = Server::get_instance();
+        server->handle_client(client_socket);
+
+        return NULL;
+    }
+
     void handle_client(int client_socket)
     {
         char buffer[1024] = {0};
@@ -96,10 +122,12 @@ public:
 
             int offset = std::stoi(buffer);
 
-            std::unique_lock<std::mutex> lock(words_mutex);
+            // std::unique_lock<std::mutex> lock(words_mutex);
+            pthread_mutex_lock(&words_mutex);
             if (offset >= (int)words.size())
             {
                 send(client_socket, "$$\n", 3, 0);
+                pthread_mutex_unlock(&words_mutex);
                 break;
             }
 
@@ -128,7 +156,8 @@ public:
                     words_sent = 0;
                 }
             }
-            lock.unlock();
+            // lock.unlock();
+            pthread_mutex_unlock(&words_mutex);
 
             if (!eofAdded && offset + k >= (int)words.size())
             {
@@ -156,8 +185,18 @@ public:
                 std::cerr << "Accept failed" << std::endl;
                 continue;
             }
-            std::thread client_thread(&Server::handle_client, this, new_socket);
-            client_thread.detach();
+            // std::thread client_thread(&Server::handle_client, this, new_socket);
+            // client_thread.detach();
+            int *client_socket = new int(new_socket);
+            pthread_t thread_id;
+            int rc = pthread_create(&thread_id, NULL, handle_client_thread, (void *)client_socket);
+            if (rc)
+            {
+                std::cerr << "Error creating thread: " << rc << std::endl;
+                delete client_socket;
+                continue;
+            }
+            pthread_detach(thread_id);
         }
 
         close(server_fd);
@@ -166,7 +205,9 @@ public:
 
 int main()
 {
-    Server server("config.json");
-    server.run();
+    // Server server("config.json");
+    // server.run();
+    Server *server = Server::get_instance();
+    server->run();
     return 0;
 }

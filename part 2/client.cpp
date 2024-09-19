@@ -9,9 +9,8 @@
 #include <unistd.h>
 #include <chrono>
 #include "json.hpp"
-#include <thread>
+#include <pthread.h>
 #include <vector>
-#include <mutex>
 
 using json = nlohmann::json;
 
@@ -21,7 +20,7 @@ private:
     struct sockaddr_in serv_addr;
     std::vector<std::map<std::string, int>> word_frequencies;
     json config;
-    std::mutex word_frequencies_mutex;
+    pthread_mutex_t word_frequencies_mutex; // Changed from std::mutex to pthread_mutex_t
     std::vector<double> client_times;
 
 public:
@@ -32,6 +31,12 @@ public:
         int num_clients = config["num_clients"].get<int>();
         word_frequencies.resize(num_clients);
         client_times.resize(num_clients);
+        pthread_mutex_init(&word_frequencies_mutex, NULL); // Initialize pthread mutex
+    }
+
+    ~Client()
+    {
+        pthread_mutex_destroy(&word_frequencies_mutex); // Destroy the mutex in destructor
     }
 
     bool connect_to_server(int &sock)
@@ -84,7 +89,7 @@ public:
             memset(buffer, 0, sizeof(buffer));
             int valread = read(sock, buffer, 1024);
 
-            if (strcmp(buffer, "$$\n") == 0 or valread <= 0)
+            if (strcmp(buffer, "$$\n") == 0 || valread <= 0)
             {
                 break;
             }
@@ -102,9 +107,15 @@ public:
                         return;
                     }
                     words_received++;
-                    std::lock_guard<std::mutex> lock(word_frequencies_mutex);
+
+                    // Lock the mutex before updating the shared word frequencies
+                    pthread_mutex_lock(&word_frequencies_mutex);
+
                     word_frequencies[client_id][word]++;
                     offset++;
+
+                    // Unlock the mutex after updating shared data
+                    pthread_mutex_unlock(&word_frequencies_mutex);
                 }
             }
         }
@@ -147,21 +158,35 @@ public:
         std::cout << "Client " << client_id << " completed in " << diff.count() << " seconds" << std::endl;
     }
 
+    static void *run_client_thread(void *arg)
+    {
+        ThreadArgs *args = static_cast<ThreadArgs *>(arg);
+        args->client->run_client(args->client_id);
+        delete args;
+        return NULL;
+    }
+
     void run()
     {
         auto start = std::chrono::high_resolution_clock::now();
 
         int num_clients = config["num_clients"].get<int>();
-        std::vector<std::thread> client_threads;
+        std::vector<pthread_t> client_threads(num_clients);
 
         for (int i = 0; i < num_clients; ++i)
         {
-            client_threads.emplace_back(&Client::run_client, this, i);
+            ThreadArgs *args = new ThreadArgs{this, i};
+            int rc = pthread_create(&client_threads[i], NULL, run_client_thread, args);
+            if (rc)
+            {
+                std::cerr << "Error creating thread: " << rc << std::endl;
+                return;
+            }
         }
 
-        for (auto &thread : client_threads)
+        for (int i = 0; i < num_clients; ++i)
         {
-            thread.join();
+            pthread_join(client_threads[i], NULL);
         }
 
         auto end = std::chrono::high_resolution_clock::now();
@@ -179,6 +204,13 @@ public:
 
         std::cout << "Average time per client: " << avg_time << " seconds" << std::endl;
     }
+
+private:
+    struct ThreadArgs
+    {
+        Client *client;
+        int client_id;
+    };
 };
 
 int main()

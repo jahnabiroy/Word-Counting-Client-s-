@@ -168,17 +168,17 @@ public:
             std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time));
 
             std::string message = std::to_string(offset) + "\n";
-            if (offset == 0)
-            {
-                message = std::to_string(offset) + "\n";
-                send(sock, message.c_str(), message.length(), 0);
-            }
-            if (words_received >= k)
-            {
-                message = std::to_string(offset) + "\n";
-                send(sock, message.c_str(), message.length(), 0);
-                words_received = 0;
-            }
+            // if (offset == 0)
+            // {
+            //     message = std::to_string(offset) + "\n";
+            //     send(sock, message.c_str(), message.length(), 0);
+            // }
+            // if (words_received >= k)
+            // {
+            //     message = std::to_string(offset) + "\n";
+            //     send(sock, message.c_str(), message.length(), 0);
+            //     words_received = 0;
+            // }
 
             if (send(sock, message.c_str(), message.length(), 0) < 0)
             {
