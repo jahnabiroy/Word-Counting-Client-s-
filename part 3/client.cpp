@@ -30,6 +30,7 @@ private:
     json config;
     Protocol protocol;
     std::default_random_engine generator;
+    int num_clients;
 
 public:
     GrumpyClient(const std::string &config_file, Protocol p)
@@ -38,6 +39,7 @@ public:
         std::ifstream f(config_file);
         config = json::parse(f);
         generator.seed(std::chrono::system_clock::now().time_since_epoch().count());
+        num_clients = config["num_clients"].get<int>();
     }
 
     bool connect_to_server(int &sock)
@@ -186,21 +188,30 @@ public:
         }
     }
 
-    void write_frequency(int client_id)
+    void write_frequency()
     {
         std::string filename = "output_client_" + std::to_string(client_id) + ".txt";
         std::ofstream out(filename);
 
-        for (const auto &pair : word_frequencies[client_id])
+        for (const auto &pair : word_frequency)
         {
             out << pair.first << ", " << pair.second << "\n";
         }
 
         out.close();
 
-        std::cout << "Client " << client_id << " output written to " << filename << std::endl;
+        std::cout << "Client output written to " << filename << std::endl;
     }
+    void run_client(int client_id)
+    {
+        auto start = std::chrono::high_resolution_clock::now();
 
+        int sock = 0;
+        if (!connect_to_server(sock))
+        {
+            return;
+        }
+    }
     void run()
     {
         auto start = std::chrono::high_resolution_clock::now();

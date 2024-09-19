@@ -28,6 +28,7 @@ private:
     std::atomic<bool> is_busy{false};
     std::chrono::time_point<std::chrono::steady_clock> current_request_start;
     std::chrono::time_point<std::chrono::steady_clock> last_collision_time;
+    int num_clients;
 
 public:
     GrumpyServer(const std::string &config_file)
@@ -35,6 +36,7 @@ public:
         std::ifstream f(config_file);
         config = json::parse(f);
         load_words();
+        num_clients = config["num_clients"].get<int>();
     }
 
     void load_words()
