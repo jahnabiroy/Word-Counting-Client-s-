@@ -132,6 +132,12 @@ public:
                 break;
             }
 
+            if (strcmp(buffer, "COLLISION\n") == 0)
+            {
+                std::cout << "Collision detected. Retrying..." << std::endl;
+                continue;
+            }
+
             std::istringstream iss(buffer);
             std::string line;
             while (std::getline(iss, line))
@@ -148,6 +154,14 @@ public:
                     words_received++;
                     word_frequency[word]++;
                     offset++;
+
+                    // Send acknowledgment
+                    std::string ack = "ACK\n";
+                    if (send(sock, ack.c_str(), ack.length(), 0) < 0)
+                    {
+                        std::cerr << "Send ACK error: " << strerror(errno) << std::endl;
+                        return;
+                    }
                 }
             }
         }
@@ -168,17 +182,7 @@ public:
             std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time));
 
             std::string message = std::to_string(offset) + "\n";
-            // if (offset == 0)
-            // {
-            //     message = std::to_string(offset) + "\n";
-            //     send(sock, message.c_str(), message.length(), 0);
-            // }
-            // if (words_received >= k)
-            // {
-            //     message = std::to_string(offset) + "\n";
-            //     send(sock, message.c_str(), message.length(), 0);
-            //     words_received = 0;
-            // }
+            std::cout << "Client sending message: " << message << std::endl; // Debug statement
 
             if (send(sock, message.c_str(), message.length(), 0) < 0)
             {
@@ -198,6 +202,8 @@ public:
                 std::cerr << "Server closed connection" << std::endl;
                 return false;
             }
+
+            std::cout << "Client received response: " << response << std::endl; // Debug statement
 
             return (strcmp(response, "HUH!\n") != 0);
         }

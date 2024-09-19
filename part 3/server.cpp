@@ -113,6 +113,8 @@ public:
             }
 
             std::string request(buffer);
+            // std::cout << "Server received request: " << request << std::endl; // Debug statement
+
             if (request == "BUSY?\n")
             {
                 if (is_busy)
@@ -131,7 +133,7 @@ public:
 
             if (collision)
             {
-                send(client_socket, "HUH!\n", 5, 0);
+                send(client_socket, "COLLISION\n", 10, 0);
                 last_collision_time = request_time;
                 continue;
             }
@@ -139,7 +141,25 @@ public:
             is_busy = true;
             current_request_start = request_time;
 
-            int offset = std::stoi(buffer);
+            int offset;
+            try
+            {
+                offset = std::stoi(request);
+            }
+            catch (const std::invalid_argument &e)
+            {
+                std::cerr << "Invalid argument: " << e.what() << " - received request: " << request << std::endl;
+                send(client_socket, "ERROR\n", 6, 0);
+                is_busy = false;
+                continue;
+            }
+            catch (const std::out_of_range &e)
+            {
+                std::cerr << "Out of range: " << e.what() << " - received request: " << request << std::endl;
+                send(client_socket, "ERROR\n", 6, 0);
+                is_busy = false;
+                continue;
+            }
 
             std::unique_lock<std::mutex> lock(words_mutex);
             if (offset >= (int)words.size())

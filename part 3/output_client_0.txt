@@ -1,0 +1,17 @@
+And, 1
+ERROR, 1
+Hickory, 5
+The, 12
+clock, 8
+dickory, 7
+dock, 6
+down, 3
+flew, 1
+he, 1
+mouse, 6
+one, 2
+ran, 6
+struck, 4
+the, 4
+two, 2
+up, 4
