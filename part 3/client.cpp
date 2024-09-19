@@ -31,6 +31,7 @@ private:
     Protocol protocol;
     std::default_random_engine generator;
     int num_clients;
+    std::vector<double> client_times;
 
 public:
     GrumpyClient(const std::string &config_file, Protocol p)
@@ -40,6 +41,7 @@ public:
         config = json::parse(f);
         generator.seed(std::chrono::system_clock::now().time_since_epoch().count());
         num_clients = config["num_clients"].get<int>();
+        client_times.resize(num_clients);
     }
 
     bool connect_to_server(int &sock)
@@ -123,7 +125,7 @@ public:
 
     bool slotted_aloha_send(int sock, int offset)
     {
-        int slot_duration = config["slot_duration"].get<int>();
+        int slot_duration = config["T"].get<int>();
         double prob = 1.0 / config["num_clients"].get<int>();
 
         std::uniform_real_distribution<double> distribution(0.0, 1.0);
@@ -146,7 +148,7 @@ public:
 
     bool beb_send(int sock, int offset, int &backoff_counter)
     {
-        int slot_duration = config["slot_duration"].get<int>();
+        int slot_duration = config["T"].get<int>();
         std::uniform_int_distribution<int> distribution(0, (1 << backoff_counter) - 1);
         int wait_time = distribution(generator) * slot_duration;
         std::this_thread::sleep_for(std::chrono::milliseconds(wait_time));
@@ -167,7 +169,7 @@ public:
 
     bool sensing_beb_send(int sock, int offset, int &backoff_counter)
     {
-        int slot_duration = config["slot_duration"].get<int>();
+        int slot_duration = config["T"].get<int>();
         while (true)
         {
             send(sock, "BUSY?\n", 6, 0);
@@ -188,7 +190,7 @@ public:
         }
     }
 
-    void write_frequency()
+    void write_frequency(int client_id)
     {
         std::string filename = "output_client_" + std::to_string(client_id) + ".txt";
         std::ofstream out(filename);
@@ -211,26 +213,49 @@ public:
         {
             return;
         }
+
+        process_words(sock);
+        close(sock);
+
+        write_frequency(client_id);
+
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> diff = end - start;
+        client_times[client_id] = diff.count();
+
+        std::cout << "Client " << client_id << " completed in " << diff.count() << " seconds" << std::endl;
     }
     void run()
     {
         auto start = std::chrono::high_resolution_clock::now();
 
-        int sock = 0;
-        if (!connect_to_server(sock))
+        int num_clients = config["num_clients"].get<int>();
+        std::vector<std::thread> client_threads;
+
+        for (int i = 0; i < num_clients; ++i)
         {
-            return;
+            client_threads.emplace_back(&GrumpyClient::run_client, this, i);
         }
 
-        process_words(sock);
-        close(sock);
-
-        write_frequency();
+        for (auto &thread : client_threads)
+        {
+            thread.join();
+        }
 
         auto end = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> diff = end - start;
+        std::chrono::duration<double> total_time = end - start;
 
-        std::cout << "Client completed in " << diff.count() << " seconds" << std::endl;
+        std::cout << "All clients completed." << std::endl;
+        std::cout << "Total time taken: " << total_time.count() << " seconds" << std::endl;
+
+        double avg_time = 0;
+        for (int i = 0; i < num_clients; ++i)
+        {
+            avg_time += client_times[i];
+        }
+        avg_time /= num_clients;
+
+        std::cout << "Average time per client: " << avg_time << " seconds" << std::endl;
     }
 };
 
