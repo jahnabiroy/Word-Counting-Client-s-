@@ -43,8 +43,10 @@ public:
         while (std::getline(file, word, ','))
         {
             words.push_back(word);
+            printf("%s\n", word.c_str());
         }
-        words.push_back("EOF");
+
+        printf("Words loaded: %d\n", words.size());
     }
 
     bool setup_server()
@@ -92,6 +94,8 @@ public:
             }
 
             int offset = std::stoi(buffer);
+            printf("Received Offset: %d\n", offset);
+
             if (offset >= words.size())
             {
                 send(new_socket, "$$\n", 3, 0);
@@ -99,18 +103,40 @@ public:
             }
 
             std::string response;
-            int k = config["k"].get<int>(); // Convert JSON value to int
-            int p = config["p"].get<int>(); // Convert JSON value to int
+            int k = config["k"].get<int>();
+            int p = config["p"].get<int>();
+            printf("k: %d, p: %d\n", k, p);
+            int words_sent = 0;
+            bool eofAdded = false;
+
             for (int i = 0; i < k && offset + i < words.size(); i++)
             {
-                response += words[offset + i] + "\n";
-                // Use the converted int values
-                if ((i + 1) % p == 0 || i == k - 1 || offset + i == words.size() - 1)
+                printf("offset + i :%d\n", i + offset);
+                response += words[offset + i] + ",";
+                words_sent++;
+
+                if (words_sent == p || i == k - 1 || offset + i == words.size() - 1)
                 {
+                    if (offset + i == words.size() - 1 && !eofAdded)
+                    {
+                        response += "EOF\n";
+                        eofAdded = true;
+                    }
+                    response.pop_back(); // Remove the last comma
+                    response += "\n";
                     send(new_socket, response.c_str(), response.length(), 0);
                     response.clear();
+                    words_sent = 0;
                 }
             }
+
+            if (!eofAdded && offset + k >= words.size())
+            {
+                response = "EOF\n";
+                send(new_socket, response.c_str(), response.length(), 0);
+            }
+
+            // printf("Sent: %d\n", words_sent);
         }
     }
 
@@ -130,7 +156,6 @@ public:
                 std::cerr << "Accept failed" << std::endl;
                 continue;
             }
-
             handle_client();
             close(new_socket);
         }

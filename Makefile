@@ -1,6 +1,6 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -Wall -Wextra -pedantic
-LDFLAGS = 
+LDFLAGS = -pthread
 
 all: build
 
@@ -19,6 +19,7 @@ plot:
 	python3 plot_results.py
 
 clean:
-	rm -f client server plot.png
+	rm -f client server plot.png output.txt
+	killall server
 
 .PHONY: all build run plot clean

@@ -31,7 +31,7 @@ public:
     {
         if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
         {
-            std::cout << "Socket creation error" << std::endl;
+            std::cerr << "Socket creation error" << std::endl;
             return false;
         }
 
@@ -40,13 +40,13 @@ public:
 
         if (inet_pton(AF_INET, config["server_ip"].get<std::string>().c_str(), &serv_addr.sin_addr) <= 0)
         {
-            std::cout << "Invalid address/ Address not supported" << std::endl;
+            std::cerr << "Invalid address/ Address not supported" << std::endl;
             return false;
         }
 
         if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
         {
-            std::cout << "Connection Failed" << std::endl;
+            std::cerr << "Connection Failed" << std::endl;
             return false;
         }
 
@@ -58,38 +58,59 @@ public:
         int offset = 0;
         std::string message;
         char buffer[1024] = {0};
+        int req_words = config["k"].get<int>();
+        int words_received = 0;
 
         while (true)
         {
-            message = std::to_string(offset) + "\n";
-            send(sock, message.c_str(), message.length(), 0);
+            if (offset == 0)
+            {
+                message = std::to_string(offset) + "\n";
+                send(sock, message.c_str(), message.length(), 0);
+            }
+            if (words_received >= req_words)
+            {
+                message = std::to_string(offset) + "\n";
+                send(sock, message.c_str(), message.length(), 0);
+                words_received = 0;
+            }
             memset(buffer, 0, sizeof(buffer));
             int valread = read(sock, buffer, 1024);
 
-            if (strcmp(buffer, "$$\n") == 0)
+            std::cout << "Received data: " << buffer << std::endl;
+
+            if (strcmp(buffer, "$$\n") == 0 or valread <= 0)
             {
                 break;
             }
 
             std::istringstream iss(buffer);
-            std::string word;
-            while (std::getline(iss, word))
+            std::string line;
+            while (std::getline(iss, line))
             {
-                if (word == "EOF")
+                std::istringstream line_stream(line);
+                std::string word;
+                printf("Received Line: %s\n", line.c_str());
+                while (std::getline(line_stream, word, ','))
                 {
-                    return;
+                    if (word == "EOF")
+                    {
+                        return;
+                    }
+                    words_received++;
+                    word_frequency[word]++;
+                    offset++;
                 }
-                word_frequency[word]++;
-                offset++;
             }
         }
     }
 
-    void print_frequency()
+    void write_frequency()
     {
         for (const auto &pair : word_frequency)
         {
             std::cout << pair.first << ", " << pair.second << std::endl;
+            std::cout.flush();
         }
     }
 
@@ -103,7 +124,7 @@ public:
         }
 
         process_words();
-        print_frequency();
+        write_frequency();
 
         auto end = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> diff = end - start;

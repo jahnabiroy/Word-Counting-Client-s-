@@ -5,10 +5,10 @@ CXXFLAGS = -std=c++11 -Wall -Wextra -pthread
 all: client server
 
 client: client.cpp
-	$(CXX) $(CXXFLAGS) -o client client.cpp $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o client client.cpp 
 
 server: server.cpp
-	$(CXX) $(CXXFLAGS) -o server server.cpp $(LDFLAGS)
+	$(CXX) $(CXXFLAGS) -o server server.cpp 
 
 build: client server
 

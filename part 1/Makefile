@@ -1,8 +1,10 @@
 CXX = g++
-CXXFLAGS = -std=c++11 -Wall -Wextra
-LDFLAGS = 
+CXXFLAGS = -std=c++17 -Wall -Wextra -pedantic
+LDFLAGS = -pthread
 
-all: client server
+all: build
+
+build: client server
 
 client: client.cpp
 	$(CXX) $(CXXFLAGS) -o client client.cpp $(LDFLAGS)
@@ -10,17 +12,14 @@ client: client.cpp
 server: server.cpp
 	$(CXX) $(CXXFLAGS) -o server server.cpp $(LDFLAGS)
 
-build: client server
-
-run: build
-	./server config.json &
-	sleep 1
-	./client config.json
+run: client server
+	./server & sleep 1 && ./client
 
 plot:
-	python3 plot.py
+	python3 plot_results.py
 
 clean:
-	rm -f client server
+	rm -f client server plot.png output.txt
+	killall server
 
 .PHONY: all build run plot clean

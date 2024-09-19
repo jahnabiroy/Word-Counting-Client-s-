@@ -1,58 +1,79 @@
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 #include <cstring>
 #include <sys/socket.h>
-#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <unistd.h>
 #include <nlohmann/json.hpp>
 
 using json = nlohmann::json;
 
-class WordCountingServer
+class Server
 {
 private:
-    int serverSocket;
-    std::string serverIP;
-    int serverPort;
-    int k;
-    int p;
-    std::string filename;
+    int server_fd, new_socket;
+    struct sockaddr_in address;
+    int opt = 1;
+    int addrlen = sizeof(address);
     std::vector<std::string> words;
+    json config;
 
-    void loadWords()
+public:
+    Server(const std::string &config_file)
     {
+        std::ifstream f(config_file);
+        config = json::parse(f);
+        load_words();
+    }
+
+    void load_words()
+    {
+        std::string filename = config["filename"].get<std::string>();
         std::ifstream file(filename);
         std::string word;
+        if (!file.is_open())
+        {
+            std::cerr << "Failed to open file: " << filename << std::endl;
+            return;
+        }
+
         while (std::getline(file, word, ','))
         {
             words.push_back(word);
+            printf("%s\n", word.c_str());
         }
-        words.push_back("EOF");
+
+        printf("Words loaded: %d\n", words.size());
     }
 
-    bool setupServer()
+    bool setup_server()
     {
-        serverSocket = socket(AF_INET, SOCK_STREAM, 0);
-        if (serverSocket == -1)
+        if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0)
         {
-            std::cerr << "Failed to create socket" << std::endl;
+            std::cerr << "Socket failed" << std::endl;
             return false;
         }
 
-        sockaddr_in serverAddr;
-        serverAddr.sin_family = AF_INET;
-        serverAddr.sin_addr.s_addr = INADDR_ANY;
-        serverAddr.sin_port = htons(serverPort);
+        if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)))
+        {
+            std::cerr << "Setsockopt failed" << std::endl;
+            return false;
+        }
 
-        if (bind(serverSocket, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0)
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = INADDR_ANY;
+        address.sin_port = htons(config["server_port"]);
+
+        if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
         {
             std::cerr << "Bind failed" << std::endl;
             return false;
         }
 
-        if (listen(serverSocket, 3) < 0)
+        if (listen(server_fd, 3) < 0)
         {
             std::cerr << "Listen failed" << std::endl;
             return false;
@@ -61,89 +82,91 @@ private:
         return true;
     }
 
-    void handleClient(int clientSocket)
+    void handle_client()
     {
         char buffer[1024] = {0};
         while (true)
         {
-            int bytesRead = recv(clientSocket, buffer, 1024, 0);
-            if (bytesRead <= 0)
+            int valread = read(new_socket, buffer, 1024);
+            if (valread <= 0)
             {
                 break;
             }
 
             int offset = std::stoi(buffer);
+            printf("Received Offset: %d\n", offset);
+
             if (offset >= words.size())
             {
-                send(clientSocket, "$$\n", 3, 0);
+                send(new_socket, "$$\n", 3, 0);
                 break;
             }
 
             std::string response;
+            int k = config["k"].get<int>();
+            int p = config["p"].get<int>();
+            printf("k: %d, p: %d\n", k, p);
+            int words_sent = 0;
+            bool eofAdded = false;
+
             for (int i = 0; i < k && offset + i < words.size(); i++)
             {
-                response += words[offset + i] + "\n";
-                if ((i + 1) % p == 0 || i == k - 1 || offset + i == words.size() - 1)
+                printf("offset + i :%d\n", i + offset);
+                response += words[offset + i] + ",";
+                words_sent++;
+
+                if (words_sent == p || i == k - 1 || offset + i == words.size() - 1)
                 {
-                    send(clientSocket, response.c_str(), response.length(), 0);
+                    if (offset + i == words.size() - 1 && !eofAdded)
+                    {
+                        response += "EOF\n";
+                        eofAdded = true;
+                    }
+                    response.pop_back(); // Remove the last comma
+                    response += "\n";
+                    send(new_socket, response.c_str(), response.length(), 0);
                     response.clear();
+                    words_sent = 0;
                 }
             }
+
+            if (!eofAdded && offset + k >= words.size())
+            {
+                response = "EOF\n";
+                send(new_socket, response.c_str(), response.length(), 0);
+            }
+
+            // printf("Sent: %d\n", words_sent);
         }
-        close(clientSocket);
-    }
-
-public:
-    WordCountingServer(const std::string &configFile)
-    {
-        std::ifstream file(configFile);
-        json config;
-        file >> config;
-
-        serverIP = config["server_ip"];
-        serverPort = config["server_port"];
-        k = config["k"];
-        p = config["p"];
-        filename = config["filename"];
     }
 
     void run()
     {
-        loadWords();
-        if (!setupServer())
+        if (!setup_server())
         {
             return;
         }
 
-        std::cout << "Server is listening on " << serverIP << ":" << serverPort << std::endl;
+        std::cout << "Server is running..." << std::endl;
 
         while (true)
         {
-            sockaddr_in clientAddr;
-            socklen_t clientAddrLen = sizeof(clientAddr);
-            int clientSocket = accept(serverSocket, (struct sockaddr *)&clientAddr, &clientAddrLen);
-            if (clientSocket < 0)
+            if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0)
             {
                 std::cerr << "Accept failed" << std::endl;
                 continue;
             }
-
-            std::cout << "New client connected" << std::endl;
-            handleClient(clientSocket);
+            handle_client();
+            close(new_socket);
         }
+
+        close(server_fd);
     }
 };
 
-int main(int argc, char *argv[])
+int main()
 {
-    if (argc != 2)
-    {
-        std::cerr << "Usage: " << argv[0] << " <config_file>" << std::endl;
-        return 1;
-    }
-
-    WordCountingServer server(argv[1]);
+    Server server("config.json");
     server.run();
-
     return 0;
 }
