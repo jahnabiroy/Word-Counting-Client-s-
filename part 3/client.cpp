@@ -70,12 +70,14 @@ public:
         return true;
     }
 
-    void process_words(int sock)
+    void process_words(int sock, int client_id)
     {
+        printf("Client %d connected to server\n", client_id);
         int offset = 0;
         std::string message;
         char buffer[1024] = {0};
         int backoff_counter = 0;
+        int words_received = 0;
 
         while (true)
         {
@@ -86,7 +88,7 @@ public:
                 switch (protocol)
                 {
                 case Protocol::SLOTTED_ALOHA:
-                    success = slotted_aloha_send(sock, offset);
+                    success = slotted_aloha_send(sock, offset, words_received);
                     break;
                 case Protocol::BEB:
                     success = beb_send(sock, offset, backoff_counter);
@@ -138,10 +140,12 @@ public:
                 std::string word;
                 while (std::getline(line_stream, word, ','))
                 {
+                    std::cout << "Received word: " << word << std::endl;
                     if (word == "EOF")
                     {
                         return;
                     }
+                    words_received++;
                     word_frequency[word]++;
                     offset++;
                 }
@@ -149,10 +153,11 @@ public:
         }
     }
 
-    bool slotted_aloha_send(int sock, int offset)
+    bool slotted_aloha_send(int sock, int offset, int words_received)
     {
         int slot_duration = config["T"].get<int>();
         double prob = 1.0 / config["num_clients"].get<int>();
+        int k = config["k"].get<int>();
 
         std::uniform_real_distribution<double> distribution(0.0, 1.0);
         if (distribution(generator) < prob)
@@ -163,7 +168,18 @@ public:
             std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time));
 
             std::string message = std::to_string(offset) + "\n";
-            std::cout << "Sending message: " << message;
+            if (offset == 0)
+            {
+                message = std::to_string(offset) + "\n";
+                send(sock, message.c_str(), message.length(), 0);
+            }
+            if (words_received >= k)
+            {
+                message = std::to_string(offset) + "\n";
+                send(sock, message.c_str(), message.length(), 0);
+                words_received = 0;
+            }
+
             if (send(sock, message.c_str(), message.length(), 0) < 0)
             {
                 std::cerr << "Send error: " << strerror(errno) << std::endl;
@@ -182,7 +198,7 @@ public:
                 std::cerr << "Server closed connection" << std::endl;
                 return false;
             }
-            std::cout << "Received response: " << response;
+
             return (strcmp(response, "HUH!\n") != 0);
         }
         return false;
@@ -281,7 +297,7 @@ public:
             return;
         }
 
-        process_words(sock);
+        process_words(sock, client_id);
         close(sock);
 
         write_frequency(client_id);
