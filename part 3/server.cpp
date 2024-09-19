@@ -12,6 +12,7 @@
 #include <mutex>
 #include <atomic>
 #include "json.hpp"
+#include <signal.h>
 
 using json = nlohmann::json;
 
@@ -109,6 +110,14 @@ public:
             int valread = read(client_socket, buffer, 1024);
             if (valread <= 0)
             {
+                if (valread == 0)
+                {
+                    std::cout << "Client disconnected, socket: " << client_socket << std::endl;
+                }
+                else
+                {
+                    std::cerr << "Read error on socket " << client_socket << ": " << strerror(errno) << std::endl;
+                }
                 break;
             }
 
@@ -117,11 +126,19 @@ public:
             {
                 if (is_busy)
                 {
-                    send(client_socket, "BUSY\n", 5, 0);
+                    if (send(client_socket, "BUSY\n", 5, 0) < 0)
+                    {
+                        std::cerr << "Send error on socket " << client_socket << ": " << strerror(errno) << std::endl;
+                        break;
+                    }
                 }
                 else
                 {
-                    send(client_socket, "IDLE\n", 5, 0);
+                    if (send(client_socket, "IDLE\n", 5, 0) < 0)
+                    {
+                        std::cerr << "Send error on socket " << client_socket << ": " << strerror(errno) << std::endl;
+                        break;
+                    }
                 }
                 continue;
             }
@@ -131,7 +148,11 @@ public:
 
             if (collision)
             {
-                send(client_socket, "HUH!\n", 5, 0);
+                if (send(client_socket, "HUH!\n", 5, 0) < 0)
+                {
+                    std::cerr << "Send error on socket " << client_socket << ": " << strerror(errno) << std::endl;
+                    break;
+                }
                 last_collision_time = request_time;
                 continue;
             }
@@ -144,7 +165,10 @@ public:
             std::unique_lock<std::mutex> lock(words_mutex);
             if (offset >= (int)words.size())
             {
-                send(client_socket, "$$\n", 3, 0);
+                if (send(client_socket, "$$\n", 3, 0) < 0)
+                {
+                    std::cerr << "Send error on socket " << client_socket << ": " << strerror(errno) << std::endl;
+                }
                 is_busy = false;
                 break;
             }
@@ -169,7 +193,11 @@ public:
                     }
                     response.pop_back(); // Remove the last comma
                     response += "\n";
-                    send(client_socket, response.c_str(), response.length(), 0);
+                    if (send(client_socket, response.c_str(), response.length(), 0) < 0)
+                    {
+                        std::cerr << "Send error on socket " << client_socket << ": " << strerror(errno) << std::endl;
+                        break;
+                    }
                     response.clear();
                     words_sent = 0;
                 }
@@ -179,7 +207,11 @@ public:
             if (!eofAdded && offset + k >= (int)words.size())
             {
                 response = "EOF\n";
-                send(client_socket, response.c_str(), response.length(), 0);
+                if (send(client_socket, response.c_str(), response.length(), 0) < 0)
+                {
+                    std::cerr << "Send error on socket " << client_socket << ": " << strerror(errno) << std::endl;
+                    break;
+                }
             }
 
             is_busy = false;
@@ -204,6 +236,7 @@ public:
                 std::cerr << "Accept failed" << std::endl;
                 continue;
             }
+            std::cout << "Accepted a new connection, socket: " << new_socket << std::endl;
             std::thread client_thread(&GrumpyServer::handle_client, this, new_socket);
             client_thread.detach();
         }
@@ -214,6 +247,8 @@ public:
 
 int main()
 {
+    signal(SIGPIPE, SIG_IGN);
+
     GrumpyServer server("config.json");
     server.run();
     return 0;

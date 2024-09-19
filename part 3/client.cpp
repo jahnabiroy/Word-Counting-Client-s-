@@ -80,7 +80,8 @@ public:
         while (true)
         {
             bool success = false;
-            while (!success)
+            int attempts = 0;
+            while (!success && attempts < 10)
             {
                 switch (protocol)
                 {
@@ -94,12 +95,37 @@ public:
                     success = sensing_beb_send(sock, offset, backoff_counter);
                     break;
                 }
+                attempts++;
+                if (!success)
+                {
+                    std::cout << "Attempt " << attempts << " failed. Retrying..." << std::endl;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                }
+            }
+
+            if (!success)
+            {
+                std::cerr << "Failed to send message after " << attempts << " attempts. Exiting." << std::endl;
+                break;
             }
 
             memset(buffer, 0, sizeof(buffer));
             int valread = read(sock, buffer, 1024);
 
-            if (strcmp(buffer, "$$\n") == 0 || valread <= 0)
+            if (valread <= 0)
+            {
+                if (valread == 0)
+                {
+                    std::cout << "Server closed connection" << std::endl;
+                }
+                else
+                {
+                    std::cerr << "Read error: " << strerror(errno) << std::endl;
+                }
+                break;
+            }
+
+            if (strcmp(buffer, "$$\n") == 0)
             {
                 break;
             }
@@ -137,10 +163,26 @@ public:
             std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time));
 
             std::string message = std::to_string(offset) + "\n";
-            send(sock, message.c_str(), message.length(), 0);
+            std::cout << "Sending message: " << message;
+            if (send(sock, message.c_str(), message.length(), 0) < 0)
+            {
+                std::cerr << "Send error: " << strerror(errno) << std::endl;
+                return false;
+            }
 
             char response[1024] = {0};
-            read(sock, response, 1024);
+            int bytes_read = read(sock, response, 1024);
+            if (bytes_read < 0)
+            {
+                std::cerr << "Read error: " << strerror(errno) << std::endl;
+                return false;
+            }
+            else if (bytes_read == 0)
+            {
+                std::cerr << "Server closed connection" << std::endl;
+                return false;
+            }
+            std::cout << "Received response: " << response;
             return (strcmp(response, "HUH!\n") != 0);
         }
         return false;
@@ -154,10 +196,18 @@ public:
         std::this_thread::sleep_for(std::chrono::milliseconds(wait_time));
 
         std::string message = std::to_string(offset) + "\n";
-        send(sock, message.c_str(), message.length(), 0);
+        if (send(sock, message.c_str(), message.length(), 0) < 0)
+        {
+            std::cerr << "Send error: " << strerror(errno) << std::endl;
+            return false;
+        }
 
         char response[1024] = {0};
-        read(sock, response, 1024);
+        if (read(sock, response, 1024) < 0)
+        {
+            std::cerr << "Read error: " << strerror(errno) << std::endl;
+            return false;
+        }
         if (strcmp(response, "HUH!\n") == 0)
         {
             backoff_counter = std::min(backoff_counter + 1, 10);
@@ -172,14 +222,30 @@ public:
         int slot_duration = config["T"].get<int>();
         while (true)
         {
-            send(sock, "BUSY?\n", 6, 0);
+            if (send(sock, "BUSY?\n", 6, 0) < 0)
+            {
+                std::cerr << "Send error: " << strerror(errno) << std::endl;
+                return false;
+            }
             char response[1024] = {0};
-            read(sock, response, 1024);
+            if (read(sock, response, 1024) < 0)
+            {
+                std::cerr << "Read error: " << strerror(errno) << std::endl;
+                return false;
+            }
             if (strcmp(response, "IDLE\n") == 0)
             {
                 std::string message = std::to_string(offset) + "\n";
-                send(sock, message.c_str(), message.length(), 0);
-                read(sock, response, 1024);
+                if (send(sock, message.c_str(), message.length(), 0) < 0)
+                {
+                    std::cerr << "Send error: " << strerror(errno) << std::endl;
+                    return false;
+                }
+                if (read(sock, response, 1024) < 0)
+                {
+                    std::cerr << "Read error: " << strerror(errno) << std::endl;
+                    return false;
+                }
                 if (strcmp(response, "HUH!\n") == 0)
                 {
                     return beb_send(sock, offset, backoff_counter);
@@ -204,6 +270,7 @@ public:
 
         std::cout << "Client output written to " << filename << std::endl;
     }
+
     void run_client(int client_id)
     {
         auto start = std::chrono::high_resolution_clock::now();
@@ -225,6 +292,7 @@ public:
 
         std::cout << "Client " << client_id << " completed in " << diff.count() << " seconds" << std::endl;
     }
+
     void run()
     {
         auto start = std::chrono::high_resolution_clock::now();
