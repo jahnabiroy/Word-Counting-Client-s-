@@ -7,7 +7,9 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
-#include <nlohmann/json.hpp>
+#include "json.hpp"
+#include <cstring>
+#include <cerrno>
 
 using json = nlohmann::json;
 
@@ -46,7 +48,7 @@ public:
             printf("%s\n", word.c_str());
         }
 
-        printf("Words loaded: %d\n", words.size());
+        printf("Words loaded: %zu\n", words.size());
     }
 
     bool setup_server()
@@ -56,8 +58,8 @@ public:
             std::cerr << "Socket failed" << std::endl;
             return false;
         }
-
-        if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)))
+        if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
+        // if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt)))
         {
             std::cerr << "Setsockopt failed" << std::endl;
             return false;
@@ -96,7 +98,7 @@ public:
             int offset = std::stoi(buffer);
             printf("Received Offset: %d\n", offset);
 
-            if (offset >= words.size())
+            if (offset >= (int)words.size())
             {
                 send(new_socket, "$$\n", 3, 0);
                 break;
@@ -109,15 +111,15 @@ public:
             int words_sent = 0;
             bool eofAdded = false;
 
-            for (int i = 0; i < k && offset + i < words.size(); i++)
+            for (int i = 0; i < k && offset + i < (int)words.size(); i++)
             {
                 printf("offset + i :%d\n", i + offset);
                 response += words[offset + i] + ",";
                 words_sent++;
 
-                if (words_sent == p || i == k - 1 || offset + i == words.size() - 1)
+                if (words_sent == p || i == k - 1 || offset + i == (int)words.size() - 1)
                 {
-                    if (offset + i == words.size() - 1 && !eofAdded)
+                    if (offset + i == (int)words.size() - 1 && !eofAdded)
                     {
                         response += "EOF\n";
                         eofAdded = true;
@@ -130,7 +132,7 @@ public:
                 }
             }
 
-            if (!eofAdded && offset + k >= words.size())
+            if (!eofAdded && offset + k >= (int)words.size())
             {
                 response = "EOF\n";
                 send(new_socket, response.c_str(), response.length(), 0);
