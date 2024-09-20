@@ -48,12 +48,12 @@ void* handle_client(void* arg) {
         pthread_mutex_lock(&mutex);
         std::cout << "Received message from client " << client_socket << ": " << message << std::endl;
         
-        if (message == "BUSY?\n") {
-            std::string response = server_status.busy ? "BUSY\n" : "IDLE\n";
-            send(client_socket, response.c_str(), response.size(), 0);
-            pthread_mutex_unlock(&mutex);
-            continue;
-        }
+        // if (message == "BUSY?\n") {
+        //     std::string response = server_status.busy ? "BUSY\n" : "IDLE\n";
+        //     send(client_socket, response.c_str(), response.size(), 0);
+        //     pthread_mutex_unlock(&mutex);
+        //     continue;
+        // }
 
         if (server_status.busy) {
             std::string huh_message = "HUH!\n";

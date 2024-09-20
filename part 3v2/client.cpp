@@ -96,7 +96,7 @@ void* binary_exponential_backoff(void* arg) {
                 backoff_attempts_beb = std::min(backoff_attempts_beb, max_backoff_attempts);
                 int max_wait_time = ((1 << backoff_attempts_beb) - 1) * slot_time_ms;
                 int wait_time = rand() % (max_wait_time + 1);
-                usleep(wait_time * 1000);
+                usleep(wait_time * 10);
                 continue;
             }
             for (const auto& word : words) {
@@ -118,12 +118,12 @@ void* binary_exponential_backoff(void* arg) {
 void* slotted_aloha(void* arg) {
     int client_id = *(int*)arg;
     delete (int*)arg;
-    double prob = 0.1;
+    double prob = (double)1/(double)total_clients;
     std::default_random_engine generator;
     std::bernoulli_distribution distribution(prob);
 
     std::unordered_map<std::string, int> word_count;
-    while (true) {
+    while (completed_clients.load() < total_clients) { // Check if all clients are completed
         if (distribution(generator)) {
             // Establish TCP connection
             int sock = 0;
@@ -171,7 +171,7 @@ void* slotted_aloha(void* arg) {
                 if (word == "EOF") break;
                 else if(word.substr(0, 4) == "HUH!") {
                     int wait_time = slot_time_ms;
-                    usleep(wait_time * 1000);
+                    usleep(wait_time);
                     continue;
                 }
                 for (const auto& word : words) {
@@ -188,8 +188,9 @@ void* slotted_aloha(void* arg) {
             completed_clients++;
             return nullptr;
         }
-        usleep(100000); // 100 ms
+        usleep(10); // 100 ms
     }
+    return nullptr;
 }
 
 void* sensing_with_beb(void* arg) {
@@ -216,7 +217,7 @@ void* sensing_with_beb(void* arg) {
         if (connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
             std::cerr << "Connection Failed\n";
             close(sock);
-            usleep(100000); // Wait for 100 ms before retrying
+            usleep(10); // Wait for 100 ms before retrying
             continue;
         }
 
@@ -257,8 +258,8 @@ void* sensing_with_beb(void* arg) {
 
                 if (response == "HUH!\n") {
                     // Revert to BEB
-                    usleep(backoff_time * 1000);
-                    backoff_time = std::min(backoff_time * 2, 1000); // Exponential backoff with a max limit
+                    usleep(backoff_time * 10);
+                    backoff_time = std::min(backoff_time * 2, 10); // Exponential backoff with a max limit
                     continue;
                 }
 
@@ -266,7 +267,7 @@ void* sensing_with_beb(void* arg) {
                 std::cout << "Client " << client_id << " received: " << response << "\n";
                 break; // Exit the inner loop after successful data reception
             } else {
-                usleep(100000); // Wait for 100 ms before asking again
+                usleep(10); // Wait for 100 ms before asking again
             }
         }
 
@@ -291,10 +292,10 @@ int main() {
     pthread_t threads[total_clients];
     for (int i = 0; i < total_clients; ++i) {
         int* client_id = new int(i);
-        // pthread_create(&threads[i], nullptr, slotted_aloha, client_id);
-        pthread_create(&threads[i], nullptr, sensing_with_beb, client_id);
+        pthread_create(&threads[i], nullptr, slotted_aloha, client_id);
+        // pthread_create(&threads[i], nullptr, sensing_with_beb, client_id);
         // pthread_create(&threads[i], nullptr, binary_exponential_backoff, client_id);
-        usleep(100000); // 100 ms
+        usleep(10); // 100 ms
     }
 
     for (int i = 0; i < total_clients; ++i) {
@@ -302,7 +303,7 @@ int main() {
     }
 
     while (completed_clients.load() < total_clients) {
-        usleep(100000); // Wait for 100 ms before checking again
+        usleep(10); // Wait for 100 ms before checking again
     }
 
     std::cout << "All clients have received the complete file.\n";
