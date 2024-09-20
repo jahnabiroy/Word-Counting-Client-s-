@@ -11,6 +11,7 @@
 #include "json.hpp"
 #include <pthread.h>
 #include <vector>
+#include <signal.h> // Include signal handling
 
 using json = nlohmann::json;
 
@@ -32,6 +33,9 @@ public:
         word_frequencies.resize(num_clients);
         client_times.resize(num_clients);
         pthread_mutex_init(&word_frequencies_mutex, NULL); // Initialize pthread mutex
+
+        // Ignore SIGPIPE signal
+        signal(SIGPIPE, SIG_IGN);
     }
 
     ~Client()
@@ -77,7 +81,7 @@ public:
         {
             if (offset == 0)
             {
-                message = std::to_string(offset) + "\n";
+                message = "DATA_REQUEST\n"; // Send a proper request
                 send(sock, message.c_str(), message.length(), 0);
             }
             if (words_received >= req_words)

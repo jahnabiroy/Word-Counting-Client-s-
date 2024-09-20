@@ -11,6 +11,7 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <sstream>
+#include <signal.h>
 #define PORT 8080
 #define MAX_CLIENTS 10
 #define WORDS_PER_PACKET 1
@@ -26,15 +27,36 @@ pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 ServerStatus server_status = {false, -1, 0, 0};
 
+void handle_sigpipe(int sig) {
+    std::cerr << "Caught SIGPIPE signal " << sig << "\n";
+}
+
 void* handle_client(void* arg) {
     int client_socket = *(int*)arg;
     delete (int*)arg;
 
     while (true) {
+        char buffer[1024] = {0};
+        int valread = read(client_socket, buffer, 1024);
+        if (valread <= 0) {
+            std::cerr << "Client disconnected or read error\n";
+            close(client_socket);
+            return nullptr;
+        }
+        std::string message(buffer, valread);
+
         pthread_mutex_lock(&mutex);
+        std::cout << "Received message from client " << client_socket << ": " << message << std::endl;
+        
+        if (message == "BUSY?\n") {
+            std::string response = server_status.busy ? "BUSY\n" : "IDLE\n";
+            send(client_socket, response.c_str(), response.size(), 0);
+            pthread_mutex_unlock(&mutex);
+            continue;
+        }
+
         if (server_status.busy) {
-            // Send "HUH!" message to client
-            std::string huh_message = "HUH!";
+            std::string huh_message = "HUH!\n";
             send(client_socket, huh_message.c_str(), huh_message.size(), 0);
             pthread_cond_broadcast(&cond);
             pthread_mutex_unlock(&mutex);
@@ -79,15 +101,18 @@ void* handle_client(void* arg) {
             words.push_back(word);
         }
 
-        // Send data in packets
         size_t offset = 0;
         while (offset < words.size()) {
             std::string packet;
             for (size_t i = 0; i < WORDS_PER_PACKET && offset < words.size(); ++i, ++offset) {
-                if (i > 0) packet += ",";
                 packet += words[offset];
+                packet += ",";
             }
-            send(client_socket, packet.c_str(), packet.size(), 0);
+            printf("Packet to Client %d: %s\n", client_socket, packet.c_str());
+            if (send(client_socket, packet.c_str(), packet.size(), 0) == -1) {
+                std::cerr << "Error sending data to client\n";
+                break;
+            }
             usleep(50000); // 50 ms
         }
 
@@ -104,6 +129,13 @@ void* handle_client(void* arg) {
 }
 
 int main() {
+    // Set up the SIGPIPE signal handler
+    struct sigaction sa;
+    sa.sa_handler = handle_sigpipe;
+    sa.sa_flags = 0;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGPIPE, &sa, NULL);
+
     int server_fd, new_socket;
     struct sockaddr_in address;
     int addrlen = sizeof(address);
