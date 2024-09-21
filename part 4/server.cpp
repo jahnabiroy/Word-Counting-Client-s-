@@ -27,8 +27,8 @@ private:
     json config;
     pthread_mutex_t words_mutex;
     pthread_mutex_t queue_mutex;
-    std::queue<int> request_queue;
-    std::map<int, int> client_request_count;
+    std::queue<std::pair<int, int>> request_queue; // pair of <client_socket, offset>
+    std::map<int, std::queue<int>> client_queues;  // For fair scheduling
     bool is_serving;
     pthread_t scheduler_thread;
     std::string scheduling_policy_given;
@@ -36,7 +36,7 @@ private:
     struct ClientRequest
     {
         int client_socket;
-        int offset;
+        int offset = 0;
     };
 
 public:
@@ -59,7 +59,7 @@ public:
 
     static Server *get_instance(const std::string &scheduling_policy)
     {
-        static Server instance("config.json", scheduling_policy);
+        static Server instance("config_4.json", scheduling_policy);
         return &instance;
     }
 
@@ -124,19 +124,16 @@ public:
     void handle_client(int client_socket)
     {
         char buffer[1024] = {0};
-        // while (true)
-        // {
         int valread = read(client_socket, buffer, 1024);
         if (valread <= 0)
         {
             return;
         }
 
-        int offset = std::stoi(buffer);
-        printf("Received offset %d from client %d\n", offset, client_socket);
+        int offset_received = std::stoi(buffer);
 
         pthread_mutex_lock(&words_mutex);
-        if (offset >= (int)words.size())
+        if (offset_received >= (int)words.size())
         {
             send(client_socket, "$$\n", 3, 0);
             pthread_mutex_unlock(&words_mutex);
@@ -149,15 +146,14 @@ public:
         int words_sent = 0;
         bool eofAdded = false;
 
-        for (int i = 0; i < k && offset + i < (int)words.size(); i++)
+        for (int i = 0; i < k && offset_received + i < (int)words.size(); i++)
         {
-            response += words[offset + i] + ",";
+            response += words[offset_received + i] + ",";
             words_sent++;
 
-            if (words_sent == p || i == k - 1 || offset + i == (int)words.size() - 1)
+            if (words_sent == p || i == k - 1 || offset_received + i == (int)words.size() - 1)
             {
-                printf("Sending %s words at offset %d to client %d\n", response.c_str(), offset + i, client_socket);
-                if (offset + i == (int)words.size() - 1 && !eofAdded)
+                if (offset_received + i == (int)words.size() - 1 && !eofAdded)
                 {
                     response += "EOF\n";
                     eofAdded = true;
@@ -171,92 +167,77 @@ public:
         }
         pthread_mutex_unlock(&words_mutex);
 
-        if (!eofAdded && offset + k >= (int)words.size())
+        if (!eofAdded && offset_received + k < (int)words.size())
+        {
+            add_to_queue(client_socket, offset_received + k);
+        }
+        else if (!eofAdded)
         {
             response = "EOF\n";
             send(client_socket, response.c_str(), response.length(), 0);
         }
-
-        if (!eofAdded)
-        {
-            add_to_queue(client_socket);
-        }
-        else
-        {
-            return;
-        }
-        // }
-        // close(client_socket);
     }
 
-    void add_to_queue(int client_socket)
+    void add_to_queue(int client_socket, int offset)
     {
         pthread_mutex_lock(&queue_mutex);
-        request_queue.push(client_socket);
-        // client_request_count[client_socket]++;
+        if (scheduling_policy_given == "fifo")
+        {
+            request_queue.push({client_socket, offset});
+        }
+        else if (scheduling_policy_given == "fair")
+        {
+            client_queues[client_socket].push(offset);
+            if (client_queues[client_socket].size() == 1)
+            {
+                request_queue.push({client_socket, offset});
+            }
+        }
         pthread_mutex_unlock(&queue_mutex);
-    }
-
-    static void *scheduler_thread_func(void *arg)
-    {
-        Server *server = static_cast<Server *>(arg);
-        server->run_scheduler();
-        return NULL;
     }
 
     void run_scheduler()
     {
-        std::queue<int> fifo;
         while (true)
         {
             pthread_mutex_lock(&queue_mutex);
             if (!request_queue.empty())
             {
-                int client_socket;
+                auto [client_socket, offset] = request_queue.front();
+                request_queue.pop();
+
                 if (scheduling_policy_given == "fair")
                 {
-                    client_socket = request_queue.front();
-                    printf("Serving client %d\n", client_socket);
-                    request_queue.pop();
+                    client_queues[client_socket].pop();
                 }
-                else if (scheduling_policy_given == "fifo")
-                {
-                    if (fifo.empty())
-                    {
-                        while (!request_queue.empty())
-                        {
-                            fifo.push(request_queue.front());
-                            printf("Adding client %d to fifo\n", request_queue.front());
-                            request_queue.pop();
-                        }
-                    }
 
-                    if (!fifo.empty())
-                    {
-                        client_socket = fifo.front();
-                        fifo.pop();
-                        printf("Adding client %d back to request queue\n", client_socket);
-                        request_queue.push(client_socket);
-                    }
-                }
                 pthread_mutex_unlock(&queue_mutex);
+
+                // // printf("Serving client %d at offset %d (%s Scheduling)\n",
+                //        client_socket, offset, scheduling_policy_given.c_str());
 
                 is_serving = true;
                 handle_client(client_socket);
-                // client_request_count[client_socket]--;
                 is_serving = false;
 
-                pthread_mutex_lock(&queue_mutex);
-                // if (client_request_count[client_socket] <= 0)
-                // {
-                //     client_request_count.erase(client_socket); // Remove the client if it's done
-                // }
-                pthread_mutex_unlock(&queue_mutex);
+                if (scheduling_policy_given == "fair")
+                {
+                    pthread_mutex_lock(&queue_mutex);
+                    if (!client_queues[client_socket].empty())
+                    {
+                        int next_offset = client_queues[client_socket].front();
+                        request_queue.push({client_socket, next_offset});
+                    }
+                    else
+                    {
+                        client_queues.erase(client_socket);
+                    }
+                    pthread_mutex_unlock(&queue_mutex);
+                }
             }
             else
             {
                 pthread_mutex_unlock(&queue_mutex);
-                // printf("No clients in queue\n");
                 usleep(1000);
             }
         }
@@ -271,7 +252,10 @@ public:
 
         std::cout << "Server is running with " << scheduling_policy_given << " scheduling..." << std::endl;
 
-        pthread_create(&scheduler_thread, NULL, scheduler_thread_func, this);
+        pthread_create(&scheduler_thread, NULL, [](void *arg) -> void *
+                       {
+            static_cast<Server*>(arg)->run_scheduler();
+            return NULL; }, this);
 
         while (true)
         {
@@ -282,7 +266,7 @@ public:
                 continue;
             }
 
-            add_to_queue(new_socket);
+            add_to_queue(new_socket, 0);
         }
 
         pthread_join(scheduler_thread, NULL);
@@ -294,12 +278,18 @@ int main(int argc, char *argv[])
 {
     if (argc != 2)
     {
-        std::cerr << "Usage: " << argv[0] << " <scheduling_policy>" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " <scheduling_policy_given>" << std::endl;
         return 1;
     }
 
     std::string scheduling_policy = argv[1];
-    Server *server = Server::get_instance(scheduling_policy);
-    server->run();
+    if (scheduling_policy != "fifo" && scheduling_policy != "fair")
+    {
+        std::cerr << "Invalid scheduling policy. Use 'fifo' or 'fair'." << std::endl;
+        return 1;
+    }
+
+    Server server("config_4.json", scheduling_policy);
+    server.run();
     return 0;
 }

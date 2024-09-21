@@ -1,0 +1,3 @@
+Rogue Client Scenario Results:
+Fair Scheduling - Avg Time: 15.2977, Jain's Fairness Index: 0.9089
+FIFO Scheduling - Avg Time: 0.8770, Jain's Fairness Index: 0.9975

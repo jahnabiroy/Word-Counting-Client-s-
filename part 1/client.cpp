@@ -111,7 +111,7 @@ public:
         {
             std::ofstream out("output.txt", std::ios::app);
             out << pair.first << ", " << pair.second << "\n";
-            std::cout << pair.first << ", " << pair.second << std::endl;
+            // std::cout << pair.first << ", " << pair.second << std::endl;
         }
     }
 
@@ -137,7 +137,7 @@ public:
 
 int main()
 {
-    Client client("config.json");
+    Client client("config_1.json");
     client.run();
     return 0;
 }

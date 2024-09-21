@@ -45,7 +45,7 @@ public:
     // Singleton pattern to access the Server instance from static methods
     static Server *get_instance()
     {
-        static Server instance("config.json");
+        static Server instance("config_2.json");
         return &instance;
     }
 
@@ -205,7 +205,7 @@ public:
 
 int main()
 {
-    // Server server("config.json");
+    // Server server("_2");
     // server.run();
     Server *server = Server::get_instance();
     server->run();

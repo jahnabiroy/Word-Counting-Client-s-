@@ -1,8 +1,8 @@
 {
     "server_ip": "127.0.0.1",
-    "server_port": 8080,
+    "server_port": 8070,
     "k": 10,
-    "p": 1,
+    "p": 2,
     "filename": "words.txt",
-    "num_clients": 10
+    "n": 1
 }

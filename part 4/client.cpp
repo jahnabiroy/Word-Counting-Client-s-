@@ -108,7 +108,7 @@ public:
                         return;
                     }
                     words_received++;
-                    printf("Client %d received word: %s\n", client_id, word.c_str());
+                    // printf("Client %d received word: %s\n", client_id, word.c_str());
 
                     pthread_mutex_lock(&word_frequencies_mutex);
                     word_frequencies[client_id][word]++;
@@ -213,7 +213,7 @@ private:
 
 int main()
 {
-    Client client("config.json");
+    Client client("config_4.json");
     client.run();
     return 0;
 }

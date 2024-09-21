@@ -15,11 +15,11 @@ server: server.cpp
 run: client server
 	./server & sleep 1 && ./client
 
-plot:
+plot: build
 	python3 plot.py
 
 clean:
 	rm -f client server plot.png output.txt
-	killall server
+	killall server 2>/dev/null || true
 
 .PHONY: all build run plot clean

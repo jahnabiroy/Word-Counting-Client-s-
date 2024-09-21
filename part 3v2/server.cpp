@@ -14,9 +14,10 @@
 #include <signal.h>
 #define PORT 8080
 #define MAX_CLIENTS 10
-#define WORDS_PER_PACKET 1
+#define WORDS_PER_PACKET 2
 
-struct ServerStatus {
+struct ServerStatus
+{
     bool busy;
     int socket_id;
     time_t start_time;
@@ -27,18 +28,22 @@ pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
 ServerStatus server_status = {false, -1, 0, 0};
 
-void handle_sigpipe(int sig) {
+void handle_sigpipe(int sig)
+{
     std::cerr << "Caught SIGPIPE signal " << sig << "\n";
 }
 
-void* handle_client(void* arg) {
-    int client_socket = *(int*)arg;
-    delete (int*)arg;
+void *handle_client(void *arg)
+{
+    int client_socket = *(int *)arg;
+    delete (int *)arg;
 
-    while (true) {
+    while (true)
+    {
         char buffer[1024] = {0};
         int valread = read(client_socket, buffer, 1024);
-        if (valread <= 0) {
+        if (valread <= 0)
+        {
             std::cerr << "Client disconnected or read error\n";
             close(client_socket);
             return nullptr;
@@ -47,7 +52,7 @@ void* handle_client(void* arg) {
 
         pthread_mutex_lock(&mutex);
         std::cout << "Received message from client " << client_socket << ": " << message << std::endl;
-        
+
         // if (message == "BUSY?\n") {
         //     std::string response = server_status.busy ? "BUSY\n" : "IDLE\n";
         //     send(client_socket, response.c_str(), response.size(), 0);
@@ -55,7 +60,8 @@ void* handle_client(void* arg) {
         //     continue;
         // }
 
-        if (server_status.busy) {
+        if (server_status.busy)
+        {
             std::string huh_message = "HUH!\n";
             send(client_socket, huh_message.c_str(), huh_message.size(), 0);
             pthread_cond_broadcast(&cond);
@@ -73,17 +79,19 @@ void* handle_client(void* arg) {
 
         // Read from the memory-mapped file
         int fd = open("word.txt", O_RDONLY);
-        if (fd == -1) {
+        if (fd == -1)
+        {
             std::cerr << "Unable to open file\n";
             close(client_socket);
             return nullptr;
         }
         struct stat sb;
         fstat(fd, &sb);
-        char* file_content = (char*)mmap(nullptr, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+        char *file_content = (char *)mmap(nullptr, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
         close(fd);
 
-        if (file_content == MAP_FAILED) {
+        if (file_content == MAP_FAILED)
+        {
             std::cerr << "Memory mapping failed\n";
             close(client_socket);
             return nullptr;
@@ -97,19 +105,23 @@ void* handle_client(void* arg) {
         std::istringstream ss(data);
         std::string word;
         std::vector<std::string> words;
-        while (std::getline(ss, word, ',')) {
+        while (std::getline(ss, word, ','))
+        {
             words.push_back(word);
         }
 
         size_t offset = 0;
-        while (offset < words.size()) {
+        while (offset < words.size())
+        {
             std::string packet;
-            for (size_t i = 0; i < WORDS_PER_PACKET && offset < words.size(); ++i, ++offset) {
+            for (size_t i = 0; i < WORDS_PER_PACKET && offset < words.size(); ++i, ++offset)
+            {
                 packet += words[offset];
                 packet += ",";
             }
             printf("Packet to Client %d: %s\n", client_socket, packet.c_str());
-            if (send(client_socket, packet.c_str(), packet.size(), 0) == -1) {
+            if (send(client_socket, packet.c_str(), packet.size(), 0) == -1)
+            {
                 std::cerr << "Error sending data to client\n";
                 break;
             }
@@ -128,7 +140,8 @@ void* handle_client(void* arg) {
     }
 }
 
-int main() {
+int main()
+{
     // Set up the SIGPIPE signal handler
     struct sigaction sa;
     sa.sa_handler = handle_sigpipe;
@@ -140,7 +153,8 @@ int main() {
     struct sockaddr_in address;
     int addrlen = sizeof(address);
 
-    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0)
+    {
         std::cerr << "Socket failed\n";
         exit(EXIT_FAILURE);
     }
@@ -149,29 +163,34 @@ int main() {
     address.sin_addr.s_addr = INADDR_ANY;
     address.sin_port = htons(PORT);
 
-    if (bind(server_fd, (struct sockaddr*)&address, sizeof(address)) < 0) {
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
+    {
         std::cerr << "Bind failed\n";
         exit(EXIT_FAILURE);
     }
 
-    if (listen(server_fd, MAX_CLIENTS) < 0) {
+    if (listen(server_fd, MAX_CLIENTS) < 0)
+    {
         std::cerr << "Listen failed\n";
         exit(EXIT_FAILURE);
     }
 
     pthread_t threads[MAX_CLIENTS];
     int i = 0;
-    while (i < MAX_CLIENTS) {
-        if ((new_socket = accept(server_fd, (struct sockaddr*)&address, (socklen_t*)&addrlen)) < 0) {
+    while (i < MAX_CLIENTS)
+    {
+        if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0)
+        {
             std::cerr << "Accept failed\n";
             exit(EXIT_FAILURE);
         }
-        int* client_socket = new int(new_socket);
+        int *client_socket = new int(new_socket);
         pthread_create(&threads[i], nullptr, handle_client, client_socket);
         i++;
     }
 
-    for (int i = 0; i < MAX_CLIENTS; ++i) {
+    for (int i = 0; i < MAX_CLIENTS; ++i)
+    {
         pthread_join(threads[i], nullptr);
     }
 

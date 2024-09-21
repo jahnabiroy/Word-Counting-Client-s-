@@ -15,7 +15,7 @@ server: server.cpp
 run: client server
 	./server & sleep 1 && ./client
 
-plot:
+plot: build
 	python3 plot.py
 
 clean:

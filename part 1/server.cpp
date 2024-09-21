@@ -168,7 +168,7 @@ public:
 
 int main()
 {
-    Server server("config.json");
+    Server server("config_1.json");
     server.run();
     return 0;
 }

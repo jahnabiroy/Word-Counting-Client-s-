@@ -29,8 +29,7 @@ plot:
 
 clean:
 	rm -f client server plot.png
-	rm -f output_client_*.txt
+	rm -f output_client*.txt
 	killall server 2>/dev/null || true
-	rm -rf output_client*.txt
 
 .PHONY: all build run plot clean
