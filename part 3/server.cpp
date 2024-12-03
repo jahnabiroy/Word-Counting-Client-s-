@@ -1,240 +1,198 @@
 #include <iostream>
-#include <fstream>
-#include <sstream>
+#include <pthread.h>
+#include <unistd.h>
 #include <string>
-#include <vector>
-#include <cstring>
+#include <queue>
+#include <fstream>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <unistd.h>
-#include <chrono>
-#include <thread>
-#include <mutex>
-#include <atomic>
-#include "json.hpp"
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sstream>
+#include <signal.h>
+#define PORT 8080
+#define MAX_CLIENTS 10
+#define WORDS_PER_PACKET 2
 
-using json = nlohmann::json;
-
-class GrumpyServer
+struct ServerStatus
 {
-private:
-    int server_fd;
-    struct sockaddr_in address;
-    int opt = 1;
-    int addrlen = sizeof(address);
-    std::vector<std::string> words;
-    json config;
-    std::mutex words_mutex;
-    std::atomic<bool> is_busy{false};
-    std::chrono::time_point<std::chrono::steady_clock> current_request_start;
-    std::chrono::time_point<std::chrono::steady_clock> last_collision_time;
-    int num_clients;
+    bool busy;
+    int socket_id;
+    time_t start_time;
+    time_t last_concurrent_request;
+};
 
-public:
-    GrumpyServer(const std::string &config_file)
-    {
-        std::ifstream f(config_file);
-        config = json::parse(f);
-        load_words();
-        num_clients = config["num_clients"].get<int>();
-    }
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+ServerStatus server_status = {false, -1, 0, 0};
 
-    void load_words()
+void handle_sigpipe(int sig)
+{
+    std::cerr << "Caught SIGPIPE signal " << sig << "\n";
+}
+
+void *handle_client(void *arg)
+{
+    int client_socket = *(int *)arg;
+    delete (int *)arg;
+
+    while (true)
     {
-        std::string filename = config["filename"].get<std::string>();
-        std::ifstream file(filename);
-        std::string word;
-        if (!file.is_open())
+        char buffer[1024] = {0};
+        int valread = read(client_socket, buffer, 1024);
+        if (valread <= 0)
         {
-            std::cerr << "Failed to open file: " << filename << std::endl;
-            return;
+            std::cerr << "Client disconnected or read error\n";
+            close(client_socket);
+            return nullptr;
+        }
+        std::string message(buffer, valread);
+
+        pthread_mutex_lock(&mutex);
+        std::cout << "Received message from client " << client_socket << ": " << message << std::endl;
+
+        // if (message == "BUSY?\n") {
+        //     std::string response = server_status.busy ? "BUSY\n" : "IDLE\n";
+        //     send(client_socket, response.c_str(), response.size(), 0);
+        //     pthread_mutex_unlock(&mutex);
+        //     continue;
+        // }
+
+        if (server_status.busy)
+        {
+            std::string huh_message = "HUH!\n";
+            send(client_socket, huh_message.c_str(), huh_message.size(), 0);
+            pthread_cond_broadcast(&cond);
+            pthread_mutex_unlock(&mutex);
+            usleep(100000); // 100 ms
+            continue;
+        }
+        server_status.busy = true;
+        server_status.socket_id = client_socket;
+        server_status.start_time = time(nullptr);
+        pthread_mutex_unlock(&mutex);
+
+        // Simulate request processing
+        sleep(1);
+
+        // Read from the memory-mapped file
+        int fd = open("word.txt", O_RDONLY);
+        if (fd == -1)
+        {
+            std::cerr << "Unable to open file\n";
+            close(client_socket);
+            return nullptr;
+        }
+        struct stat sb;
+        fstat(fd, &sb);
+        char *file_content = (char *)mmap(nullptr, sb.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+        close(fd);
+
+        if (file_content == MAP_FAILED)
+        {
+            std::cerr << "Memory mapping failed\n";
+            close(client_socket);
+            return nullptr;
         }
 
-        while (std::getline(file, word, ','))
+        // Simulate sending data to the client
+        std::string data(file_content, sb.st_size);
+        munmap(file_content, sb.st_size);
+
+        // Split data by commas
+        std::istringstream ss(data);
+        std::string word;
+        std::vector<std::string> words;
+        while (std::getline(ss, word, ','))
         {
             words.push_back(word);
         }
-    }
 
-    bool setup_server()
-    {
-        if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0)
+        size_t offset = 0;
+        while (offset < words.size())
         {
-            std::cerr << "Socket failed" << std::endl;
-            return false;
-        }
-        if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0)
-        {
-            std::cerr << "Setsockopt failed" << std::endl;
-            return false;
-        }
-
-        address.sin_family = AF_INET;
-        address.sin_addr.s_addr = INADDR_ANY;
-        address.sin_port = htons(config["server_port"]);
-
-        if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
-        {
-            std::cerr << "Bind failed" << std::endl;
-            return false;
-        }
-
-        if (listen(server_fd, 3) < 0)
-        {
-            std::cerr << "Listen failed" << std::endl;
-            return false;
-        }
-
-        return true;
-    }
-
-    bool check_collision(const std::chrono::time_point<std::chrono::steady_clock> &request_time)
-    {
-        if (is_busy)
-        {
-            return true;
-        }
-        if (request_time <= last_collision_time)
-        {
-            return true;
-        }
-        return false;
-    }
-
-    void handle_client(int client_socket)
-    {
-        char buffer[1024] = {0};
-        while (true)
-        {
-            int valread = read(client_socket, buffer, 1024);
-            if (valread <= 0)
+            std::string packet;
+            for (size_t i = 0; i < WORDS_PER_PACKET && offset < words.size(); ++i, ++offset)
             {
+                packet += words[offset];
+                packet += ",";
+            }
+            printf("Packet to Client %d: %s\n", client_socket, packet.c_str());
+            if (send(client_socket, packet.c_str(), packet.size(), 0) == -1)
+            {
+                std::cerr << "Error sending data to client\n";
                 break;
             }
-
-            std::string request(buffer);
-            // std::cout << "Server received request: " << request << std::endl; // Debug statement
-
-            if (request == "BUSY?\n")
-            {
-                if (is_busy)
-                {
-                    send(client_socket, "BUSY\n", 5, 0);
-                }
-                else
-                {
-                    send(client_socket, "IDLE\n", 5, 0);
-                }
-                continue;
-            }
-
-            auto request_time = std::chrono::steady_clock::now();
-            bool collision = check_collision(request_time);
-
-            if (collision)
-            {
-                send(client_socket, "COLLISION\n", 10, 0);
-                last_collision_time = request_time;
-                continue;
-            }
-
-            is_busy = true;
-            current_request_start = request_time;
-
-            int offset;
-            try
-            {
-                offset = std::stoi(request);
-            }
-            catch (const std::invalid_argument &e)
-            {
-                std::cerr << "Invalid argument: " << e.what() << " - received request: " << request << std::endl;
-                send(client_socket, "ERROR\n", 6, 0);
-                is_busy = false;
-                continue;
-            }
-            catch (const std::out_of_range &e)
-            {
-                std::cerr << "Out of range: " << e.what() << " - received request: " << request << std::endl;
-                send(client_socket, "ERROR\n", 6, 0);
-                is_busy = false;
-                continue;
-            }
-
-            std::unique_lock<std::mutex> lock(words_mutex);
-            if (offset >= (int)words.size())
-            {
-                send(client_socket, "$$\n", 3, 0);
-                is_busy = false;
-                break;
-            }
-
-            std::string response;
-            int k = config["k"].get<int>();
-            int p = config["p"].get<int>();
-            int words_sent = 0;
-            bool eofAdded = false;
-
-            for (int i = 0; i < k && offset + i < (int)words.size(); i++)
-            {
-                response += words[offset + i] + ",";
-                words_sent++;
-
-                if (words_sent == p || i == k - 1 || offset + i == (int)words.size() - 1)
-                {
-                    if (offset + i == (int)words.size() - 1 && !eofAdded)
-                    {
-                        response += "EOF\n";
-                        eofAdded = true;
-                    }
-                    response.pop_back(); // Remove the last comma
-                    response += "\n";
-                    send(client_socket, response.c_str(), response.length(), 0);
-                    response.clear();
-                    words_sent = 0;
-                }
-            }
-            lock.unlock();
-
-            if (!eofAdded && offset + k >= (int)words.size())
-            {
-                response = "EOF\n";
-                send(client_socket, response.c_str(), response.length(), 0);
-            }
-
-            is_busy = false;
+            usleep(50000); // 50 ms
         }
+
         close(client_socket);
+
+        pthread_mutex_lock(&mutex);
+        server_status.busy = false;
+        std::cout << "Done serving Client " << client_socket << "\n";
+        pthread_cond_broadcast(&cond);
+        pthread_mutex_unlock(&mutex);
+
+        return nullptr;
     }
-
-    void run()
-    {
-        if (!setup_server())
-        {
-            return;
-        }
-
-        std::cout << "Grumpy Server is running..." << std::endl;
-
-        while (true)
-        {
-            int new_socket;
-            if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0)
-            {
-                std::cerr << "Accept failed" << std::endl;
-                continue;
-            }
-            std::thread client_thread(&GrumpyServer::handle_client, this, new_socket);
-            client_thread.detach();
-        }
-
-        close(server_fd);
-    }
-};
+}
 
 int main()
 {
-    GrumpyServer server("config.json");
-    server.run();
+    // Set up the SIGPIPE signal handler
+    struct sigaction sa;
+    sa.sa_handler = handle_sigpipe;
+    sa.sa_flags = 0;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGPIPE, &sa, NULL);
+
+    int server_fd, new_socket;
+    struct sockaddr_in address;
+    int addrlen = sizeof(address);
+
+    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0)
+    {
+        std::cerr << "Socket failed\n";
+        exit(EXIT_FAILURE);
+    }
+
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = INADDR_ANY;
+    address.sin_port = htons(PORT);
+
+    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0)
+    {
+        std::cerr << "Bind failed\n";
+        exit(EXIT_FAILURE);
+    }
+
+    if (listen(server_fd, MAX_CLIENTS) < 0)
+    {
+        std::cerr << "Listen failed\n";
+        exit(EXIT_FAILURE);
+    }
+
+    pthread_t threads[MAX_CLIENTS];
+    int i = 0;
+    while (i < MAX_CLIENTS)
+    {
+        if ((new_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t *)&addrlen)) < 0)
+        {
+            std::cerr << "Accept failed\n";
+            exit(EXIT_FAILURE);
+        }
+        int *client_socket = new int(new_socket);
+        pthread_create(&threads[i], nullptr, handle_client, client_socket);
+        i++;
+    }
+
+    for (int i = 0; i < MAX_CLIENTS; ++i)
+    {
+        pthread_join(threads[i], nullptr);
+    }
+
     return 0;
 }

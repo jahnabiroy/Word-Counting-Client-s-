@@ -1,384 +1,361 @@
 #include <iostream>
-#include <fstream>
-#include <sstream>
-#include <string>
-#include <map>
-#include <cstring>
+#include <pthread.h>
+#include <unistd.h>
+#include <random>
 #include <sys/socket.h>
 #include <arpa/inet.h>
-#include <unistd.h>
-#include <chrono>
-#include <thread>
-#include <random>
-#include <algorithm>
-#include "json.hpp"
+#include <cstring>
+#include <unordered_map>
+#include <sstream>
+#include <sys/stat.h>
+#include <vector>
+#include <atomic>
+#include <fstream>
+#include <signal.h>
 
-using json = nlohmann::json;
+#define PORT 8080
+#define SERVER_IP "127.0.0.1"
+#define BUFFER_SIZE 1024
 
-enum class Protocol
+std::atomic<int> completed_clients(0);
+const int total_clients = 2;
+int slot_time_ms = 50;
+
+void dump_word_frequencies(int client_id, const std::unordered_map<std::string, int> &word_count)
 {
-    SLOTTED_ALOHA,
-    BEB,
-    SENSING_BEB
-};
-
-class GrumpyClient
-{
-private:
-    struct sockaddr_in serv_addr;
-    std::map<std::string, int> word_frequency;
-    json config;
-    Protocol protocol;
-    std::default_random_engine generator;
-    int num_clients;
-    std::vector<double> client_times;
-
-public:
-    GrumpyClient(const std::string &config_file, Protocol p)
-        : protocol(p)
+    std::ofstream outfile("output_client" + std::to_string(client_id) + ".txt");
+    if (outfile.is_open())
     {
-        std::ifstream f(config_file);
-        config = json::parse(f);
-        generator.seed(std::chrono::system_clock::now().time_since_epoch().count());
-        num_clients = config["num_clients"].get<int>();
-        client_times.resize(num_clients);
+        // outfile << "Client " << client_id << " word frequencies:\n";
+        for (const auto &pair : word_count)
+        {
+            outfile << pair.first << ": " << pair.second << "\n";
+        }
+        outfile.close();
     }
-
-    bool connect_to_server(int &sock)
+    else
     {
+        std::cerr << "Unable to open file for client " << client_id << "\n";
+    }
+}
+
+void handle_sigpipe(int sig)
+{
+    std::cerr << "Caught SIGPIPE signal " << sig << "\n";
+}
+
+void *binary_exponential_backoff(void *arg)
+{
+    int client_id = *(int *)arg;
+    delete (int *)arg;
+
+    std::unordered_map<std::string, int> word_count;
+    const int max_backoff_attempts = 10; // Set a limit for backoff attempts
+
+    while (true)
+    {
+        // Establish TCP connection
+        int sock = 0;
+        struct sockaddr_in serv_addr;
         if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
         {
-            std::cerr << "Socket creation error" << std::endl;
-            return false;
+            std::cerr << "Client " << client_id << ": Socket creation error\n";
+            continue;
         }
 
         serv_addr.sin_family = AF_INET;
-        serv_addr.sin_port = htons(config["server_port"]);
+        serv_addr.sin_port = htons(PORT);
 
-        if (inet_pton(AF_INET, config["server_ip"].get<std::string>().c_str(), &serv_addr.sin_addr) <= 0)
+        if (inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr) <= 0)
         {
-            std::cerr << "Invalid address/ Address not supported" << std::endl;
-            return false;
+            std::cerr << "Client " << client_id << ": Invalid address/ Address not supported\n";
+            close(sock);
+            continue;
         }
 
         if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
         {
-            std::cerr << "Connection Failed" << std::endl;
-            return false;
+            std::cerr << "Client " << client_id << ": Connection Failed\n";
+            close(sock);
+            continue;
         }
 
-        return true;
-    }
+        // Send request
+        std::string request = "GET /word.txt";
+        if (send(sock, request.c_str(), request.size(), 0) == -1)
+        {
+            std::cerr << "Client " << client_id << ": Error sending request\n";
+            close(sock);
+            continue;
+        }
 
-    void process_words(int sock, int client_id)
-    {
-        printf("Client %d connected to server\n", client_id);
-        int offset = 0;
-        std::string message;
-        char buffer[1024] = {0};
-        int backoff_counter = 0;
-        int words_received = 0;
-
+        // Receive data
+        char buffer[BUFFER_SIZE] = {0};
+        int backoff_attempts_beb = 0; // Reset backoff attempts for each new connection
         while (true)
         {
-            bool success = false;
-            int attempts = 0;
-            while (!success && attempts < 10)
-            {
-                switch (protocol)
-                {
-                case Protocol::SLOTTED_ALOHA:
-                    success = slotted_aloha_send(sock, offset, words_received);
-                    break;
-                case Protocol::BEB:
-                    success = beb_send(sock, offset, backoff_counter);
-                    break;
-                case Protocol::SENSING_BEB:
-                    success = sensing_beb_send(sock, offset, backoff_counter);
-                    break;
-                }
-                attempts++;
-                if (!success)
-                {
-                    std::cout << "Attempt " << attempts << " failed. Retrying..." << std::endl;
-                    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-                }
-            }
-
-            if (!success)
-            {
-                std::cerr << "Failed to send message after " << attempts << " attempts. Exiting." << std::endl;
-                break;
-            }
-
-            memset(buffer, 0, sizeof(buffer));
-            int valread = read(sock, buffer, 1024);
-
+            int valread = read(sock, buffer, BUFFER_SIZE);
             if (valread <= 0)
-            {
-                if (valread == 0)
-                {
-                    std::cout << "Server closed connection" << std::endl;
-                }
-                else
-                {
-                    std::cerr << "Read error: " << strerror(errno) << std::endl;
-                }
                 break;
-            }
-
-            if (strcmp(buffer, "$$\n") == 0)
+            std::string data(buffer, valread);
+            std::istringstream iss(data);
+            std::string word;
+            std::vector<std::string> words;
+            while (std::getline(iss, word, ','))
             {
+                words.push_back(word);
+            }
+            if (word == "EOF")
                 break;
-            }
-
-            if (strcmp(buffer, "COLLISION\n") == 0)
+            else if (word.substr(0, 4) == "HUH!")
             {
-                std::cout << "Collision detected. Retrying..." << std::endl;
+                backoff_attempts_beb++;
+                backoff_attempts_beb = std::min(backoff_attempts_beb, max_backoff_attempts);
+                int max_wait_time = ((1 << backoff_attempts_beb) - 1) * slot_time_ms;
+                int wait_time = rand() % (max_wait_time + 1);
+                usleep(wait_time * 10);
+                continue;
+            }
+            for (const auto &word : words)
+            {
+                std::cout << "Client " << client_id << ": " << word << std::endl;
+                word_count[word]++;
+            }
+        }
+
+        close(sock);
+
+        // Print word frequencies
+        dump_word_frequencies(client_id, word_count);
+
+        completed_clients++;
+        return nullptr;
+    }
+}
+
+void *slotted_aloha(void *arg)
+{
+    int client_id = *(int *)arg;
+    delete (int *)arg;
+    double prob = (double)1 / (double)total_clients;
+    std::default_random_engine generator;
+    std::bernoulli_distribution distribution(prob);
+
+    std::unordered_map<std::string, int> word_count;
+    while (completed_clients.load() < total_clients)
+    { // Check if all clients are completed
+        if (distribution(generator))
+        {
+            // Establish TCP connection
+            int sock = 0;
+            struct sockaddr_in serv_addr;
+            if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
+            {
+                std::cerr << "Client " << client_id << ": Socket creation error\n";
                 continue;
             }
 
-            std::istringstream iss(buffer);
-            std::string line;
-            while (std::getline(iss, line))
-            {
-                std::istringstream line_stream(line);
-                std::string word;
-                while (std::getline(line_stream, word, ','))
-                {
-                    std::cout << "Received word: " << word << std::endl;
-                    if (word == "EOF")
-                    {
-                        return;
-                    }
-                    words_received++;
-                    word_frequency[word]++;
-                    offset++;
+            serv_addr.sin_family = AF_INET;
+            serv_addr.sin_port = htons(PORT);
 
-                    // Send acknowledgment
-                    std::string ack = "ACK\n";
-                    if (send(sock, ack.c_str(), ack.length(), 0) < 0)
-                    {
-                        std::cerr << "Send ACK error: " << strerror(errno) << std::endl;
-                        return;
-                    }
+            if (inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr) <= 0)
+            {
+                std::cerr << "Client " << client_id << ": Invalid address/ Address not supported\n";
+                close(sock);
+                continue;
+            }
+
+            if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+            {
+                std::cerr << "Client " << client_id << ": Connection Failed\n";
+                close(sock);
+                continue;
+            }
+
+            // Send request
+            std::string request = "GET /word.txt";
+            if (send(sock, request.c_str(), request.size(), 0) == -1)
+            {
+                std::cerr << "Client " << client_id << ": Error sending request\n";
+                close(sock);
+                continue;
+            }
+
+            // Receive data
+            char buffer[BUFFER_SIZE] = {0};
+            while (true)
+            {
+                int valread = read(sock, buffer, BUFFER_SIZE);
+                if (valread <= 0)
+                    break;
+                std::string data(buffer, valread);
+                std::istringstream iss(data);
+                std::string word;
+                std::vector<std::string> words;
+                while (std::getline(iss, word, ','))
+                {
+                    words.push_back(word);
+                }
+                if (word == "EOF")
+                    break;
+                else if (word.substr(0, 4) == "HUH!")
+                {
+                    int wait_time = slot_time_ms;
+                    usleep(wait_time);
+                    continue;
+                }
+                for (const auto &word : words)
+                {
+                    std::cout << "Client " << client_id << ": " << word << std::endl;
+                    word_count[word]++;
                 }
             }
+
+            close(sock);
+
+            // Print word frequencies
+            dump_word_frequencies(client_id, word_count);
+
+            completed_clients++;
+            return nullptr;
         }
+        usleep(10); // 100 ms
     }
+    return nullptr;
+}
 
-    bool slotted_aloha_send(int sock, int offset, int words_received)
+void *sensing_with_beb(void *arg)
+{
+    int client_id = *(int *)arg;
+    delete (int *)arg;
+
+    while (true)
     {
-        int slot_duration = config["T"].get<int>();
-        double prob = 1.0 / config["num_clients"].get<int>();
-        int k = config["k"].get<int>();
-
-        std::uniform_real_distribution<double> distribution(0.0, 1.0);
-        if (distribution(generator) < prob)
+        int sock = 0;
+        struct sockaddr_in serv_addr;
+        if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0)
         {
-            auto now = std::chrono::system_clock::now();
-            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch());
-            int sleep_time = slot_duration - (ms.count() % slot_duration);
-            std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time));
-
-            std::string message = std::to_string(offset) + "\n";
-            std::cout << "Client sending message: " << message << std::endl; // Debug statement
-
-            if (send(sock, message.c_str(), message.length(), 0) < 0)
-            {
-                std::cerr << "Send error: " << strerror(errno) << std::endl;
-                return false;
-            }
-
-            char response[1024] = {0};
-            int bytes_read = read(sock, response, 1024);
-            if (bytes_read < 0)
-            {
-                std::cerr << "Read error: " << strerror(errno) << std::endl;
-                return false;
-            }
-            else if (bytes_read == 0)
-            {
-                std::cerr << "Server closed connection" << std::endl;
-                return false;
-            }
-
-            std::cout << "Client received response: " << response << std::endl; // Debug statement
-
-            return (strcmp(response, "HUH!\n") != 0);
-        }
-        return false;
-    }
-
-    bool beb_send(int sock, int offset, int &backoff_counter)
-    {
-        int slot_duration = config["T"].get<int>();
-        std::uniform_int_distribution<int> distribution(0, (1 << backoff_counter) - 1);
-        int wait_time = distribution(generator) * slot_duration;
-        std::this_thread::sleep_for(std::chrono::milliseconds(wait_time));
-
-        std::string message = std::to_string(offset) + "\n";
-        if (send(sock, message.c_str(), message.length(), 0) < 0)
-        {
-            std::cerr << "Send error: " << strerror(errno) << std::endl;
-            return false;
+            std::cerr << "Socket creation error\n";
+            continue;
         }
 
-        char response[1024] = {0};
-        if (read(sock, response, 1024) < 0)
-        {
-            std::cerr << "Read error: " << strerror(errno) << std::endl;
-            return false;
-        }
-        if (strcmp(response, "HUH!\n") == 0)
-        {
-            backoff_counter = std::min(backoff_counter + 1, 10);
-            return false;
-        }
-        backoff_counter = 0;
-        return true;
-    }
+        serv_addr.sin_family = AF_INET;
+        serv_addr.sin_port = htons(PORT);
 
-    bool sensing_beb_send(int sock, int offset, int &backoff_counter)
-    {
-        int slot_duration = config["T"].get<int>();
+        if (inet_pton(AF_INET, SERVER_IP, &serv_addr.sin_addr) <= 0)
+        {
+            std::cerr << "Invalid address/ Address not supported\n";
+            close(sock);
+            continue;
+        }
+
+        if (connect(sock, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
+        {
+            std::cerr << "Connection Failed\n";
+            close(sock);
+            usleep(10); // Wait for 100 ms before retrying
+            continue;
+        }
+
+        int backoff_time = 1;
         while (true)
         {
-            if (send(sock, "BUSY?\n", 6, 0) < 0)
+            std::string busy_check = "BUSY?\n";
+            if (send(sock, busy_check.c_str(), busy_check.size(), 0) == -1)
             {
-                std::cerr << "Send error: " << strerror(errno) << std::endl;
-                return false;
+                std::cerr << "Client " << client_id << ": Error sending busy check\n";
+                close(sock);
+                break; // Exit the inner loop and retry connection
             }
-            char response[1024] = {0};
-            if (read(sock, response, 1024) < 0)
+
+            char buffer[1024] = {0};
+            int valread = read(sock, buffer, 1024);
+            if (valread <= 0)
             {
-                std::cerr << "Read error: " << strerror(errno) << std::endl;
-                return false;
+                std::cerr << "Client " << client_id << ": Error reading response\n";
+                close(sock);
+                break; // Exit the inner loop and retry connection
             }
-            if (strcmp(response, "IDLE\n") == 0)
+            std::string response(buffer, valread);
+            std::cout << "Client " << client_id << " received: " << response << "\n";
+            if (response == "IDLE\n")
             {
-                std::string message = std::to_string(offset) + "\n";
-                if (send(sock, message.c_str(), message.length(), 0) < 0)
+                std::string data_request = "DATA_REQUEST\n";
+                if (send(sock, data_request.c_str(), data_request.size(), 0) == -1)
                 {
-                    std::cerr << "Send error: " << strerror(errno) << std::endl;
-                    return false;
+                    std::cerr << "Client " << client_id << ": Error sending data request\n";
+                    close(sock);
+                    break; // Exit the inner loop and retry connection
                 }
-                if (read(sock, response, 1024) < 0)
+
+                // Read server response
+                valread = read(sock, buffer, 1024);
+                if (valread <= 0)
                 {
-                    std::cerr << "Read error: " << strerror(errno) << std::endl;
-                    return false;
+                    std::cerr << "Client " << client_id << ": Error reading data response\n";
+                    close(sock);
+                    break; // Exit the inner loop and retry connection
                 }
-                if (strcmp(response, "HUH!\n") == 0)
+                response = std::string(buffer, valread);
+
+                if (response == "HUH!\n")
                 {
-                    return beb_send(sock, offset, backoff_counter);
+                    // Revert to BEB
+                    usleep(backoff_time * 10);
+                    backoff_time = std::min(backoff_time * 2, 10); // Exponential backoff with a max limit
+                    continue;
                 }
-                return true;
+
+                // Process the data received from the server
+                std::cout << "Client " << client_id << " received: " << response << "\n";
+                break; // Exit the inner loop after successful data reception
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(slot_duration));
-        }
-    }
-
-    void write_frequency(int client_id)
-    {
-        std::string filename = "output_client_" + std::to_string(client_id) + ".txt";
-        std::ofstream out(filename);
-
-        for (const auto &pair : word_frequency)
-        {
-            out << pair.first << ", " << pair.second << "\n";
-        }
-
-        out.close();
-
-        std::cout << "Client output written to " << filename << std::endl;
-    }
-
-    void run_client(int client_id)
-    {
-        auto start = std::chrono::high_resolution_clock::now();
-
-        int sock = 0;
-        if (!connect_to_server(sock))
-        {
-            return;
+            else
+            {
+                usleep(10); // Wait for 100 ms before asking again
+            }
         }
 
-        process_words(sock, client_id);
         close(sock);
-
-        write_frequency(client_id);
-
-        auto end = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> diff = end - start;
-        client_times[client_id] = diff.count();
-
-        std::cout << "Client " << client_id << " completed in " << diff.count() << " seconds" << std::endl;
+        completed_clients++;
+        if (completed_clients.load() >= total_clients)
+        {
+            break; // Exit the outer loop if all clients are completed
+        }
     }
 
-    void run()
-    {
-        auto start = std::chrono::high_resolution_clock::now();
+    return nullptr;
+}
 
-        int num_clients = config["num_clients"].get<int>();
-        std::vector<std::thread> client_threads;
-
-        for (int i = 0; i < num_clients; ++i)
-        {
-            client_threads.emplace_back(&GrumpyClient::run_client, this, i);
-        }
-
-        for (auto &thread : client_threads)
-        {
-            thread.join();
-        }
-
-        auto end = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> total_time = end - start;
-
-        std::cout << "All clients completed." << std::endl;
-        std::cout << "Total time taken: " << total_time.count() << " seconds" << std::endl;
-
-        double avg_time = 0;
-        for (int i = 0; i < num_clients; ++i)
-        {
-            avg_time += client_times[i];
-        }
-        avg_time /= num_clients;
-
-        std::cout << "Average time per client: " << avg_time << " seconds" << std::endl;
-    }
-};
-
-int main(int argc, char *argv[])
+int main()
 {
-    if (argc != 2)
+    // Set up the SIGPIPE signal handler
+    struct sigaction sa;
+    sa.sa_handler = handle_sigpipe;
+    sa.sa_flags = 0;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGPIPE, &sa, NULL);
+
+    pthread_t threads[total_clients];
+    for (int i = 0; i < total_clients; ++i)
     {
-        std::cerr << "Usage: " << argv[0] << " <protocol>" << std::endl;
-        return 1;
+        int *client_id = new int(i);
+        pthread_create(&threads[i], nullptr, slotted_aloha, client_id);
+        // pthread_create(&threads[i], nullptr, sensing_with_beb, client_id);
+        // pthread_create(&threads[i], nullptr, binary_exponential_backoff, client_id);
+        usleep(10); // 100 ms
     }
 
-    std::string protocol_str = argv[1];
-    Protocol protocol;
-
-    if (protocol_str == "aloha")
+    for (int i = 0; i < total_clients; ++i)
     {
-        protocol = Protocol::SLOTTED_ALOHA;
-    }
-    else if (protocol_str == "beb")
-    {
-        protocol = Protocol::BEB;
-    }
-    else if (protocol_str == "sensing")
-    {
-        protocol = Protocol::SENSING_BEB;
-    }
-    else
-    {
-        std::cerr << "Invalid protocol. Use 'aloha', 'beb', or 'sensing'." << std::endl;
-        return 1;
+        pthread_join(threads[i], nullptr);
     }
 
-    GrumpyClient client("config.json", protocol);
-    client.run();
+    while (completed_clients.load() < total_clients)
+    {
+        usleep(10); // Wait for 100 ms before checking again
+    }
+
+    std::cout << "All clients have received the complete file.\n";
     return 0;
 }

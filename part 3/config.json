@@ -1,9 +1,0 @@
-{
-    "server_ip": "127.0.0.1",
-    "server_port": 8080,
-    "k": 10,
-    "p": 1,
-    "filename": "word.txt",
-    "num_clients": 2,
-    "T": 50
-}
